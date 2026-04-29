@@ -2,6 +2,8 @@ import { useState } from "react";
 import { useNavigate } from "react-router";
 import { Heart, MessageCircle, Eye, ChevronDown } from "lucide-react";
 
+type TweetKind = "tweet" | "repost" | "quote" | "comment";
+
 interface Token {
   rank: number;
   icon: string;
@@ -39,6 +41,35 @@ function highlightKeywords(text: string, keywords: string[]) {
   return result;
 }
 
+function getTweetKindBadge(keywords: string[]): { label: string; className: string } | null {
+  const kind = String(keywords[0] ?? "").toLowerCase().trim() as TweetKind;
+  if (kind === "tweet") {
+    return {
+      label: "TWEET",
+      className: "bg-sky-500/10 text-sky-300 border border-sky-500/30",
+    };
+  }
+  if (kind === "repost") {
+    return {
+      label: "REPOST",
+      className: "bg-violet-500/10 text-violet-300 border border-violet-500/30",
+    };
+  }
+  if (kind === "quote") {
+    return {
+      label: "QUOTE",
+      className: "bg-amber-500/10 text-amber-300 border border-amber-500/30",
+    };
+  }
+  if (kind === "comment") {
+    return {
+      label: "COMMENT",
+      className: "bg-emerald-500/10 text-emerald-300 border border-emerald-500/30",
+    };
+  }
+  return null;
+}
+
 export function TweetCard({
   avatar,
   avatarColor,
@@ -58,6 +89,8 @@ export function TweetCard({
 }: TweetCardProps) {
   const [isTokensExpanded, setIsTokensExpanded] = useState(initiallyExpanded);
   const navigate = useNavigate();
+  const typeBadge = getTweetKindBadge(keywords);
+  const highlightableKeywords = typeBadge ? keywords.slice(1) : keywords;
 
   const fromNarrative = narrative.replace(/\s+/g, "").slice(0, 12).toUpperCase();
   const suggestedName = tokens[0]?.name?.trim() || fromNarrative || "TOKEN";
@@ -84,13 +117,20 @@ export function TweetCard({
                 {handle}
               </button>
             </div>
-            <span className="text-xs md:text-sm bg-zinc-900 px-2 md:px-3 py-1 md:py-1.5 rounded-full border border-zinc-800 text-zinc-400 whitespace-nowrap">
-              {time}
-            </span>
+            <div className="flex items-center gap-2">
+              {typeBadge ? (
+                <span className={`text-[10px] md:text-xs px-2 md:px-2.5 py-1 rounded-full font-bold tracking-wide whitespace-nowrap ${typeBadge.className}`}>
+                  {typeBadge.label}
+                </span>
+              ) : null}
+              <span className="text-xs md:text-sm bg-zinc-900 px-2 md:px-3 py-1 md:py-1.5 rounded-full border border-zinc-800 text-zinc-400 whitespace-nowrap">
+                {time}
+              </span>
+            </div>
           </div>
           <div
             className="text-sm md:text-base leading-relaxed text-zinc-300 mb-3 md:mb-4"
-            dangerouslySetInnerHTML={{ __html: highlightKeywords(tweet, keywords) }}
+            dangerouslySetInnerHTML={{ __html: highlightKeywords(tweet, highlightableKeywords) }}
           />
           {image ? (
             <div className="mb-3 md:mb-4 rounded-xl md:rounded-2xl overflow-hidden border border-zinc-700">
@@ -119,11 +159,10 @@ export function TweetCard({
         <div className="px-4 md:px-6 py-3 md:py-4 border-t border-zinc-800 flex items-center gap-2 md:gap-3 flex-wrap">
           <button
             type="button"
-            onClick={() =>
-              onTokenize
-                ? onTokenize(narrative, suggestedName)
-                : navigate("/tokenize", { state: { narrative } })
-            }
+            onClick={() => {
+              if (onTokenize) onTokenize(narrative, suggestedName);
+              else navigate("/tokenize", { state: { narrative, suggestedName } });
+            }}
             className="px-4 md:px-6 py-2 md:py-3 text-sm md:text-base font-bold bg-emerald-500 text-white rounded-xl hover:bg-emerald-600 transition-all shadow-[0_4px_14px_0_rgba(16,185,129,0.45)] hover:shadow-[0_6px_20px_rgba(16,185,129,0.55)] hover:scale-[1.02] active:scale-[0.98]"
           >
             Tokenize

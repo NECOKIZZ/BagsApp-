@@ -29,59 +29,21 @@ type FeedFilter = "all" | "noTokens" | "highScore";
 const isFeedFilter = (v: unknown): v is FeedFilter =>
   v === "all" || v === "noTokens" || v === "highScore";
 
-/** Demo card for Bags tokenize testing — see FEED_INCLUDE_DUMMY in .env */
-function buildDummyFeedTweet(): {
-  tweet_id: string;
-  avatar: string;
-  avatarColor: string;
-  name: string;
-  handle: string;
-  time: string;
-  tweet: string;
-  keywords: string[];
-  likes: string;
-  retweets: string;
-  views: string;
-  narrative: string;
-  image?: string;
-  tokens: {
-    rank: number;
-    icon: string;
-    name: string;
-    match: number;
-    marketCap: string;
-    returns: string;
-    score: number;
-  }[];
-} {
-  const narrative =
-    "Local demo post — use Tokenize to run a real Bags launch flow (metadata, fee share, Phantom signatures). Swap in live tweets once your feed pipeline is connected.";
-  return {
-    tweet_id: "demo-feed-preview",
-    avatar: "DM",
-    avatarColor: "#7dd3a0",
-    name: "Demo feed (local)",
-    handle: "@demo_feed_preview",
-    time: "Preview",
-    tweet: narrative,
-    keywords: ["Bags", "demo", "launch"],
-    likes: "0",
-    retweets: "0",
-    views: "0",
-    narrative,
-    tokens: [],
-  };
-}
-
-function shouldIncludeDummyFeedRow(realRowCount: number): boolean {
-  const flag = process.env.FEED_INCLUDE_DUMMY?.trim().toLowerCase();
-  if (flag === "false" || flag === "0" || flag === "no") return false;
-  if (flag === "true" || flag === "1" || flag === "yes") return true;
-  return realRowCount === 0;
-}
-
 const NONCE_TTL_MS = 5 * 60 * 1000;
 const SESSION_TTL_MS = 24 * 60 * 60 * 1000;
+
+const DEFAULT_TRACKED_HANDLES = [
+  "0xnecokizz",
+  "vitalikbuterin",
+  "cz_binance",
+  "arthurcrypto",
+  "zachxbt",
+  "blknoiz06",
+  "muststopmurad",
+  "realdonaldtrump",
+  "a1lon9",
+  "elonmusk",
+];
 
 const buildAuthMessage = (address: string, nonce: string, issuedAt: string): string =>
   `Sign this message to authenticate with Feed.\n\nAddress: ${address}\nNonce: ${nonce}\nIssued At: ${issuedAt}`;
@@ -103,6 +65,77 @@ async function getSessionWalletAddress(req: express.Request): Promise<string | n
   if (error || !session) return null;
   if (Date.now() > new Date(session.expires_at).getTime()) return null;
   return session.address;
+}
+
+function toRelativeTime(isoLike: unknown): string {
+  const ts = typeof isoLike === "string" ? Date.parse(isoLike) : NaN;
+  if (!Number.isFinite(ts)) return "now";
+  const diffMs = Date.now() - ts;
+  const mins = Math.max(0, Math.floor(diffMs / 60000));
+  if (mins < 1) return "now";
+  if (mins < 60) return `${mins}m`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h`;
+  const days = Math.floor(hours / 24);
+  return `${days}d`;
+}
+
+type NormalizedIncomingTweet = {
+  id: string;
+  handle: string;
+  content: string;
+  likes: number;
+  retweets: number;
+  replies: number;
+  postedAt: string;
+  kind: "tweet" | "repost" | "quote" | "comment";
+};
+
+function normalizeTwitterapiTweet(rawTweet: unknown): NormalizedIncomingTweet | null {
+  const t = (rawTweet ?? {}) as Record<string, unknown>;
+  const author = (t.author ?? {}) as Record<string, unknown>;
+  const handleRaw =
+    author.username ??
+    author.userName ??
+    t.user_name ??
+    t.username ??
+    t.screen_name;
+  const handle = String(handleRaw ?? "").replace(/^@/, "").toLowerCase().trim();
+  const id = String(t.id ?? t.tweet_id ?? "").trim();
+  if (!handle || !id) return null;
+
+  const referenced = Array.isArray(t.referenced_tweets)
+    ? (t.referenced_tweets as Array<Record<string, unknown>>)
+    : [];
+  const hasRef = (refType: string): boolean =>
+    referenced.some((r) => String(r?.type ?? "").toLowerCase() === refType);
+
+  const isRepost =
+    Boolean(t.is_retweet) ||
+    Boolean(t.retweeted_tweet_id) ||
+    hasRef("retweeted") ||
+    Boolean(t.retweeted_tweet);
+  const isQuote = Boolean(t.is_quote) || Boolean(t.quote_tweet_id) || hasRef("quoted") || Boolean(t.quoted_tweet);
+  const isComment =
+    Boolean(t.in_reply_to_status_id) ||
+    Boolean(t.in_reply_to_tweet_id) ||
+    hasRef("replied_to") ||
+    Boolean(t.is_reply);
+
+  const kind: NormalizedIncomingTweet["kind"] = isRepost ? "repost" : isQuote ? "quote" : isComment ? "comment" : "tweet";
+  const baseText = String(t.text ?? t.full_text ?? t.note_tweet_text ?? "").trim();
+  const content = (kind === "tweet" ? baseText : `[${kind}] ${baseText}`).trim();
+
+  return {
+    id,
+    handle,
+    content,
+    likes: Number(t.like_count ?? t.favorite_count ?? t.likes ?? 0),
+    retweets: Number(t.retweet_count ?? t.retweets ?? 0),
+    replies: Number(t.reply_count ?? t.replies ?? 0),
+    postedAt: String(t.created_at ?? t.createdAt ?? new Date().toISOString()),
+    kind,
+  };
 }
 
 async function recordBagsSnapshot(params: {
@@ -127,6 +160,52 @@ async function recordBagsSnapshot(params: {
 const defaultTokenImageUrl = (): string =>
   process.env.BAGS_DEFAULT_TOKEN_IMAGE_URL?.trim() ||
   "https://img.freepik.com/premium-vector/white-abstract-vactor-background-design_665257-153.jpg";
+
+/**
+ * Map a Bags error to actionable advice. Bags' error text is often generic
+ * ("Internal server error"), so we also use the endpoint + step context
+ * to surface the most likely cause.
+ */
+function interpretBagsError(
+  err: unknown,
+  step: "token_info" | "fee_share_config" | "fee_share_submit" | "launch_tx" | "launch_submit",
+): { message: string; status: number; hint: string } {
+  const status = err instanceof BagsApiError ? err.status : 502;
+  const raw = err instanceof BagsApiError ? err.message : err instanceof Error ? err.message : String(err);
+  const lower = raw.toLowerCase();
+
+  let hint = "";
+  if (/insufficient/.test(lower) || /not enough sol/.test(lower) || /lamports/.test(lower)) {
+    hint =
+      "Wallet has insufficient SOL. Fund the wallet with enough SOL to cover the initial buy + fees (typically initialBuy + ~0.01 SOL).";
+  } else if (/invalid api key|unauthor/.test(lower) || status === 401 || status === 403) {
+    hint = "BAGS_API_KEY rejected. Generate a new key at dev.bags.fm and update your .env.";
+  } else if (/rate limit|429/.test(lower) || status === 429) {
+    hint = "Rate limited (>1000 req/hour). Wait a minute and retry.";
+  } else if (/name|symbol|description|image/i.test(raw) && status === 400) {
+    hint =
+      "Validation: name max 32 chars, symbol max 10 chars, description max 1000 chars, image must be public URL or <15MB upload.";
+  } else if (/bps|basis/.test(lower)) {
+    hint = "BPS rule: claimers must sum to exactly 10000 (= 100%).";
+  } else if (status >= 500 && status < 600) {
+    if (step === "launch_tx") {
+      hint =
+        "Most common cause for 500 here: insufficient SOL in the launching wallet (initial buy + tx fees), or Bags couldn't see the just-confirmed fee-share config yet — wait ~5s and retry.";
+    } else if (step === "launch_submit" || step === "fee_share_submit") {
+      hint =
+        "On-chain submission failed. Likely the signed transaction expired (blockhash too old), or a duplicate. Retry the launch fresh.";
+    } else if (step === "fee_share_config") {
+      hint = "Fee share config rejected. Check claimers/BPS sum to 10000 and the wallet exists.";
+    } else if (step === "token_info") {
+      hint =
+        "Token metadata creation failed. Check imageUrl is a public, fast-loading image (try a small PNG <2MB) and name/symbol/description lengths.";
+    } else {
+      hint = "Bags-side server error. Retry in a moment; if persistent, check your wallet has SOL and the API key is valid.";
+    }
+  }
+
+  return { message: raw, status: status >= 400 && status < 600 ? status : 502, hint };
+}
 
 app.post("/api/auth/nonce", (req, res) => {
   const address = String(req.body?.address ?? "").trim();
@@ -332,15 +411,24 @@ app.get("/api/feed", async (req, res) => {
     const normalized = rows.map((row) => {
       const creator = row.creators ?? {};
       const tokens = Array.isArray(row.narrative_tokens) ? row.narrative_tokens : [];
+      const lowerContent = String(row.content ?? "").toLowerCase();
+      const typeKeyword =
+        lowerContent.startsWith("[repost]")
+          ? "repost"
+          : lowerContent.startsWith("[quote]")
+            ? "quote"
+            : lowerContent.startsWith("[comment]")
+              ? "comment"
+              : "tweet";
       return {
         tweet_id: row.tweet_id ?? row.id ?? null,
         avatar: String((creator.display_name ?? creator.handle ?? "NA")).slice(0, 2).toUpperCase(),
         avatarColor: "#B5D4F4",
         name: creator.display_name ?? creator.handle ?? "Unknown",
         handle: creator.handle ? `@${String(creator.handle).replace(/^@/, "")}` : "@unknown",
-        time: "now",
+        time: toRelativeTime(row.posted_at),
         tweet: row.content ?? "",
-        keywords: [] as string[],
+        keywords: [typeKeyword],
         likes: String(row.likes ?? 0),
         retweets: String(row.retweets ?? 0),
         views: String(row.views ?? 0),
@@ -358,14 +446,9 @@ app.get("/api/feed", async (req, res) => {
       };
     });
 
-    let merged = normalized;
-    if (shouldIncludeDummyFeedRow(normalized.length)) {
-      merged = [buildDummyFeedTweet(), ...normalized];
-    }
-
-    const tweets = merged.filter((t) => {
+    const tweets = normalized.filter((t) => {
       if (filter === "noTokens") return t.tokens.length === 0;
-      if (filter === "highScore") return t.tokens.some((x) => x.score >= 70);
+      if (filter === "highScore") return t.tokens.some((x: { score: number }) => x.score >= 70);
       return true;
     });
 
@@ -498,11 +581,8 @@ app.post("/api/launches", async (req, res) => {
     } catch (e) {
       console.error("Bags create-token-info error:", e);
       await supabase.from("launches").update({ status: "failed" }).eq("id", launchId);
-      const msg = e instanceof BagsApiError ? e.message : "Bags create-token-info failed";
-      res.status(e instanceof BagsApiError ? (e.status >= 400 && e.status < 600 ? e.status : 502) : 502).json({
-        error: msg,
-        launch: inserted,
-      });
+      const i = interpretBagsError(e, "token_info");
+      res.status(i.status).json({ error: i.message, hint: i.hint, step: "token_info", launch: inserted });
       return;
     }
 
@@ -525,9 +605,11 @@ app.post("/api/launches", async (req, res) => {
     } catch (e) {
       console.error("Bags fee-share config error:", e);
       await supabase.from("launches").update({ status: "failed", token_mint: tokenMint, metadata_uri: tokenMetadata }).eq("id", launchId);
-      const msg = e instanceof BagsApiError ? e.message : "Bags fee-share config failed";
-      res.status(e instanceof BagsApiError ? (e.status >= 400 && e.status < 600 ? e.status : 502) : 502).json({
-        error: msg,
+      const i = interpretBagsError(e, "fee_share_config");
+      res.status(i.status).json({
+        error: i.message,
+        hint: i.hint,
+        step: "fee_share_config",
         launch: { ...inserted, token_mint: tokenMint, metadata_uri: tokenMetadata },
       });
       return;
@@ -592,10 +674,8 @@ app.post("/api/launches", async (req, res) => {
             meteora_config_key: fr.meteoraConfigKey,
           })
           .eq("id", launchId);
-        const msg = e instanceof BagsApiError ? e.message : "Bags create-launch-transaction failed";
-        res.status(e instanceof BagsApiError ? (e.status >= 400 && e.status < 600 ? e.status : 502) : 502).json({
-          error: msg,
-        });
+        const i = interpretBagsError(e, "launch_tx");
+        res.status(i.status).json({ error: i.message, hint: i.hint, step: "launch_tx" });
         return;
       }
       bagsState.launchTx = lt.response;
@@ -686,10 +766,8 @@ app.post("/api/launches/:launchId/submit-tx", async (req, res) => {
         const sent = await bagsSendTransaction(signedTransaction);
         sig = sent.response;
       } catch (e) {
-        const msg = e instanceof BagsApiError ? e.message : "Failed to submit transaction to Bags";
-        res.status(e instanceof BagsApiError ? (e.status >= 400 && e.status < 600 ? e.status : 502) : 502).json({
-          error: msg,
-        });
+        const i = interpretBagsError(e, "fee_share_submit");
+        res.status(i.status).json({ error: i.message, hint: i.hint, step: "fee_share_submit" });
         return;
       }
 
@@ -728,11 +806,8 @@ app.post("/api/launches/:launchId/submit-tx", async (req, res) => {
       } catch (e) {
         console.error("Bags create-launch-tx (after fee) error:", e);
         await supabase.from("launches").update({ bags_state: nextState, status: "failed" }).eq("id", launchId);
-        const msg = e instanceof BagsApiError ? e.message : "Bags create-launch-transaction failed";
-        res.status(e instanceof BagsApiError ? (e.status >= 400 && e.status < 600 ? e.status : 502) : 502).json({
-          error: msg,
-          signature: sig,
-        });
+        const i = interpretBagsError(e, "launch_tx");
+        res.status(i.status).json({ error: i.message, hint: i.hint, step: "launch_tx", signature: sig });
         return;
       }
 
@@ -768,10 +843,8 @@ app.post("/api/launches/:launchId/submit-tx", async (req, res) => {
         const sent = await bagsSendTransaction(signedTransaction);
         sig = sent.response;
       } catch (e) {
-        const msg = e instanceof BagsApiError ? e.message : "Failed to submit launch transaction";
-        res.status(e instanceof BagsApiError ? (e.status >= 400 && e.status < 600 ? e.status : 502) : 502).json({
-          error: msg,
-        });
+        const i = interpretBagsError(e, "launch_submit");
+        res.status(i.status).json({ error: i.message, hint: i.hint, step: "launch_submit" });
         return;
       }
 
@@ -838,13 +911,112 @@ app.get("/api/creators", async (_req, res) => {
   }
 });
 
+// ── twitterapi.io monitor sync (tracks configured handles) ───
+app.post("/api/admin/twitterapi/sync-monitors", async (_req, res) => {
+  try {
+    const apiKey = process.env.TWITTERAPI_IO_KEY?.trim();
+    if (!apiKey) {
+      res.status(400).json({ error: "TWITTERAPI_IO_KEY missing in .env" });
+      return;
+    }
+
+    const envHandles = (process.env.TWITTER_TRACKED_HANDLES ?? "")
+      .split(",")
+      .map((h) => h.trim().replace(/^@/, "").toLowerCase())
+      .filter(Boolean);
+
+    let handles = envHandles;
+    if (handles.length === 0) {
+      const { data: creators, error } = await supabase
+        .from("creators")
+        .select("handle")
+        .not("handle", "is", null)
+        .limit(200);
+      if (error) {
+        console.error("sync-monitors creators lookup error:", error);
+        res.status(500).json({ error: "Failed to load creators" });
+        return;
+      }
+      handles = (creators ?? [])
+        .map((c: { handle?: string | null }) => String(c.handle ?? "").replace(/^@/, "").toLowerCase().trim())
+        .filter(Boolean);
+    }
+    if (handles.length === 0) handles = DEFAULT_TRACKED_HANDLES;
+
+    const uniqueHandles = [...new Set(handles)];
+    const added: string[] = [];
+    const failed: Array<{ handle: string; status: number; body: string }> = [];
+
+    for (const handle of uniqueHandles) {
+      const r = await fetch("https://api.twitterapi.io/oapi/x_user_stream/add_user_to_monitor_tweet", {
+        method: "POST",
+        headers: {
+          "x-api-key": apiKey,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ x_user_name: handle }),
+      });
+      if (!r.ok) {
+        failed.push({
+          handle,
+          status: r.status,
+          body: await r.text().catch(() => ""),
+        });
+        continue;
+      }
+      added.push(handle);
+    }
+
+    res.json({
+      success: true,
+      requested: uniqueHandles.length,
+      added,
+      failed,
+      note: "Tweets/reposts/quotes/replies from monitored users will be pushed to /api/webhooks/twitterapi when webhook is configured in twitterapi.io dashboard.",
+    });
+  } catch (err) {
+    console.error("sync-monitors error:", err);
+    res.status(500).json({ error: "Monitor sync failed" });
+  }
+});
+
 // ── Webhook (Apify → new tweets) ─────────────────────────────
+/**
+ * Pull tweets out of an Apify webhook body.
+ * Apify's default webhook body looks like:
+ *   { eventType, resource: { defaultDatasetId, ... }, ... }
+ * We also accept inline `items` arrays for tests/curl.
+ */
+async function extractApifyTweets(body: unknown): Promise<unknown[]> {
+  if (Array.isArray(body)) return body;
+  const b = body as { items?: unknown[]; resource?: { defaultDatasetId?: string } };
+  if (Array.isArray(b?.items)) return b.items;
+  const datasetId = b?.resource?.defaultDatasetId;
+  if (datasetId) {
+    const apifyToken = process.env.APIFY_TOKEN?.trim();
+    const url = `https://api.apify.com/v2/datasets/${datasetId}/items?clean=true&format=json${
+      apifyToken ? `&token=${encodeURIComponent(apifyToken)}` : ""
+    }`;
+    console.log(`[apify-webhook] fetching dataset ${datasetId}`);
+    const r = await fetch(url);
+    if (!r.ok) {
+      console.error(`[apify-webhook] dataset fetch failed: ${r.status} ${await r.text().catch(() => "")}`);
+      return [];
+    }
+    const data = (await r.json()) as unknown[];
+    return Array.isArray(data) ? data : [];
+  }
+  return [];
+}
+
 app.post("/api/webhooks/apify", async (req, res) => {
   try {
-    const items = req.body?.items ?? req.body ?? [];
-    const tweets = Array.isArray(items) ? items : [items];
+    const tweets = await extractApifyTweets(req.body);
+    console.log(`[apify-webhook] received ${tweets.length} tweet(s)`);
 
-    for (const tweet of tweets) {
+    let inserted = 0;
+    let skipped = 0;
+    for (const tweet of tweets as Array<Record<string, unknown> & { author?: { userName?: string } }>) {
       const handle = tweet?.author?.userName?.toLowerCase();
       if (!handle) continue;
 
@@ -855,30 +1027,264 @@ app.post("/api/webhooks/apify", async (req, res) => {
         .eq("handle", handle)
         .single();
 
-      if (!creator) continue;
+      if (!creator) {
+        skipped++;
+        continue;
+      }
 
-      // Upsert tweet — won't duplicate if already exists
+      const t = tweet as Record<string, unknown>;
       const { error } = await supabase.from("tweets").upsert(
         {
-          tweet_id: tweet.id,
+          tweet_id: String(t.id ?? ""),
           creator_handle: creator.handle,
-          content: tweet.text ?? tweet.fullText ?? "",
-          likes: tweet.likeCount ?? 0,
-          retweets: tweet.retweetCount ?? 0,
-          replies: tweet.replyCount ?? 0,
-          posted_at: tweet.createdAt ?? new Date().toISOString(),
+          content: String(t.text ?? t.fullText ?? ""),
+          likes: Number(t.likeCount ?? 0),
+          retweets: Number(t.retweetCount ?? 0),
+          replies: Number(t.replyCount ?? 0),
+          posted_at: String(t.createdAt ?? new Date().toISOString()),
         },
-        { onConflict: "tweet_id" }
+        { onConflict: "tweet_id" },
       );
 
-      if (error) console.error("Tweet upsert error:", error);
+      if (error) {
+        console.error("Tweet upsert error:", error);
+      } else {
+        inserted++;
+      }
     }
 
-    res.json({ success: true });
+    console.log(`[apify-webhook] inserted=${inserted} skipped=${skipped}`);
+    res.json({ success: true, inserted, skipped, total: tweets.length });
   } catch (err) {
     console.error("Webhook error:", err);
     res.status(500).json({ error: "Webhook processing failed" });
   }
+});
+
+// ── Webhook (twitterapi.io → real-time tweets) ───────────────
+/**
+ * twitterapi.io pushes a payload like:
+ *   {
+ *     event_type: "tweet",
+ *     rule_id: "...",
+ *     rule_tag: "...",
+ *     tweets: [{ id, text, author: { username, ... }, created_at, like_count, retweet_count, reply_count }],
+ *     timestamp: 1642789123456
+ *   }
+ * It also includes an `X-API-Key` header equal to your account API key.
+ * Set TWITTERAPI_WEBHOOK_KEY in .env to enable verification.
+ */
+app.post("/api/webhooks/twitterapi", async (req, res) => {
+  try {
+    const expectedKey = process.env.TWITTERAPI_WEBHOOK_KEY?.trim();
+    const receivedKey = (req.header("x-api-key") || req.header("X-API-Key") || "").trim();
+    if (expectedKey && receivedKey !== expectedKey) {
+      console.warn("[twitterapi-webhook] rejected: bad/missing X-API-Key");
+      res.status(401).json({ error: "unauthorized" });
+      return;
+    }
+
+    const body = req.body as {
+      event_type?: string;
+      tweet?: unknown;
+      tweets?: Array<{
+        id?: string;
+        text?: string;
+        author?: { username?: string };
+        created_at?: string;
+        like_count?: number;
+        retweet_count?: number;
+        reply_count?: number;
+      }>;
+    };
+    const rawTweets = Array.isArray(body?.tweets)
+      ? body.tweets
+      : body?.tweet
+        ? [body.tweet]
+        : [];
+    const tweets = rawTweets.map((t) => normalizeTwitterapiTweet(t)).filter((t): t is NormalizedIncomingTweet => !!t);
+    console.log(`[twitterapi-webhook] received ${tweets.length} tweet(s) (event=${body?.event_type ?? "?"})`);
+
+    let inserted = 0;
+    let skipped = 0;
+    for (const tweet of tweets) {
+      const { data: creator } = await supabase
+        .from("creators")
+        .select("handle")
+        .eq("handle", tweet.handle)
+        .single();
+
+      if (!creator) {
+        skipped++;
+        continue;
+      }
+
+      const { error } = await supabase.from("tweets").upsert(
+        {
+          tweet_id: tweet.id,
+          creator_handle: creator.handle,
+          content: tweet.content,
+          likes: tweet.likes,
+          retweets: tweet.retweets,
+          replies: tweet.replies,
+          posted_at: tweet.postedAt,
+        },
+        { onConflict: "tweet_id" },
+      );
+
+      if (error) {
+        console.error("Tweet upsert error:", error);
+      } else {
+        inserted++;
+      }
+    }
+
+    console.log(`[twitterapi-webhook] inserted=${inserted} skipped=${skipped}`);
+    res.json({ success: true, inserted, skipped, total: tweets.length });
+  } catch (err) {
+    console.error("twitterapi webhook error:", err);
+    res.status(500).json({ error: "Webhook processing failed" });
+  }
+});
+
+// ── Live metrics refresher ───────────────────────────────────
+/**
+ * Webhooks deliver a *snapshot* of likes/retweets/replies at the moment a tweet
+ * was first detected — the values never auto-update. This periodic job calls
+ * twitterapi.io's GET /twitter/tweets?tweet_ids=... endpoint to refresh metrics
+ * for the most recent N tweets (younger than ~24h).
+ *
+ * Cost-aware defaults:
+ *   - METRICS_REFRESH_LIMIT (default 20)   — how many recent tweets to refresh
+ *   - METRICS_REFRESH_INTERVAL_MS (default 5 min)
+ *   - METRICS_REFRESH_MAX_AGE_HOURS (default 24)
+ */
+async function refreshTweetMetricsOnce(): Promise<void> {
+  const apiKey = process.env.TWITTERAPI_IO_KEY?.trim();
+  if (!apiKey) return;
+
+  const limit = Number(process.env.METRICS_REFRESH_LIMIT ?? 20);
+  const maxAgeHours = Number(process.env.METRICS_REFRESH_MAX_AGE_HOURS ?? 24);
+  const sinceIso = new Date(Date.now() - maxAgeHours * 3600 * 1000).toISOString();
+
+  const { data: rows, error } = await supabase
+    .from("tweets")
+    .select("tweet_id")
+    .gte("posted_at", sinceIso)
+    .order("posted_at", { ascending: false })
+    .limit(limit);
+
+  if (error) {
+    console.error("[metrics-refresh] supabase select error:", error);
+    return;
+  }
+  const ids = (rows ?? [])
+    .map((r: { tweet_id?: string | null }) => String(r.tweet_id ?? "").trim())
+    .filter(Boolean);
+  if (ids.length === 0) return;
+
+  try {
+    const url = `https://api.twitterapi.io/twitter/tweets?tweet_ids=${encodeURIComponent(ids.join(","))}`;
+    const r = await fetch(url, { headers: { "x-api-key": apiKey } });
+    if (!r.ok) {
+      console.warn(`[metrics-refresh] api ${r.status}: ${await r.text().catch(() => "")}`);
+      return;
+    }
+    const body = (await r.json()) as { tweets?: Array<Record<string, unknown>>; data?: Record<string, unknown> };
+    const list: Array<Record<string, unknown>> = Array.isArray(body?.tweets)
+      ? body.tweets
+      : Array.isArray((body?.data as { tweets?: unknown[] })?.tweets)
+        ? ((body.data as { tweets: Array<Record<string, unknown>> }).tweets)
+        : [];
+
+    if (list.length > 0 && process.env.METRICS_REFRESH_DEBUG === "1") {
+      console.log("[metrics-refresh] sample tweet keys:", Object.keys(list[0]).join(","));
+    }
+
+    const num = (v: unknown): number => {
+      const n = Number(v);
+      return Number.isFinite(n) ? n : 0;
+    };
+
+    let updated = 0;
+    for (const t of list) {
+      const id = String(t.id ?? t.tweet_id ?? "").trim();
+      if (!id) continue;
+      const likes = num(t.likeCount ?? t.like_count ?? t.favorite_count ?? t.likes);
+      const retweets = num(t.retweetCount ?? t.retweet_count ?? t.retweets);
+      const replies = num(t.replyCount ?? t.reply_count ?? t.replies);
+      const views = num(
+        (t as { viewCount?: number; view_count?: number; views?: number }).viewCount ??
+          (t as { view_count?: number }).view_count ??
+          (t as { views?: number }).views,
+      );
+
+      const { error: upErr } = await supabase
+        .from("tweets")
+        .update({ likes, retweets, replies, views })
+        .eq("tweet_id", id);
+      if (upErr) {
+        console.warn(`[metrics-refresh] update fail id=${id}:`, upErr.message);
+      } else {
+        updated++;
+      }
+    }
+    console.log(`[metrics-refresh] refreshed=${updated}/${ids.length}`);
+  } catch (err) {
+    console.error("[metrics-refresh] error:", err);
+  }
+}
+
+function startMetricsRefresher(): void {
+  if (!process.env.TWITTERAPI_IO_KEY?.trim()) {
+    console.log("[metrics-refresh] disabled (TWITTERAPI_IO_KEY missing)");
+    return;
+  }
+  const intervalMs = Number(process.env.METRICS_REFRESH_INTERVAL_MS ?? 5 * 60 * 1000);
+  console.log(`[metrics-refresh] enabled, interval=${Math.round(intervalMs / 1000)}s`);
+  // First run after short delay so server finishes startup logs.
+  setTimeout(() => {
+    void refreshTweetMetricsOnce();
+    setInterval(() => void refreshTweetMetricsOnce(), intervalMs);
+  }, 15_000);
+}
+
+// Manual trigger for testing
+app.post("/api/admin/twitterapi/refresh-metrics", async (_req, res) => {
+  await refreshTweetMetricsOnce();
+  res.json({ ok: true });
+});
+
+// ── Tweet retention cleanup ──────────────────────────────────
+/**
+ * Deletes tweets older than TWEET_RETENTION_DAYS (default 30).
+ * Runs once a day. Keeps the `tweets` table small and feed queries fast.
+ */
+async function cleanupOldTweetsOnce(): Promise<void> {
+  const days = Number(process.env.TWEET_RETENTION_DAYS ?? 30);
+  const cutoff = new Date(Date.now() - days * 24 * 3600 * 1000).toISOString();
+  const { error, count } = await supabase
+    .from("tweets")
+    .delete({ count: "exact" })
+    .lt("posted_at", cutoff);
+  if (error) {
+    console.error("[tweet-cleanup] error:", error.message);
+    return;
+  }
+  console.log(`[tweet-cleanup] deleted ${count ?? 0} tweets older than ${days}d`);
+}
+
+function startCleanupJob(): void {
+  const ONE_DAY = 24 * 60 * 60 * 1000;
+  setTimeout(() => {
+    void cleanupOldTweetsOnce();
+    setInterval(() => void cleanupOldTweetsOnce(), ONE_DAY);
+  }, 60_000);
+}
+
+app.post("/api/admin/cleanup-tweets", async (_req, res) => {
+  await cleanupOldTweetsOnce();
+  res.json({ ok: true });
 });
 
 app.listen(PORT, () => {
@@ -887,4 +1293,6 @@ app.listen(PORT, () => {
   console.log(
     `[feed-api] BAGS_API_KEY: ${bagsConfigured() ? "loaded" : "MISSING — use exact name BAGS_API_KEY in .env at project root, then restart this server"}`
   );
+  startMetricsRefresher();
+  startCleanupJob();
 });

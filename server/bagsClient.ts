@@ -81,14 +81,31 @@ export async function bagsJson<T>(
   const data = (await parseJson(res)) as BagsErrorBody & { response?: unknown; success?: boolean };
 
   if (!res.ok || data.success === false) {
-    const msg =
-      typeof data.error === "string" && data.error.length > 0
-        ? data.error
-        : `Bags API error (${res.status})`;
+    console.error(
+      `[bags-http] ERROR ${init.method ?? "GET"} ${path} status=${res.status} body=`,
+      JSON.stringify(data).slice(0, 1500),
+    );
+    const msg = extractBagsErrorMessage(data, res.status);
     throw new BagsApiError(msg, res.status, data);
   }
 
   return data as T;
+}
+
+/**
+ * Bags is inconsistent about where it puts error text. Sometimes it's in
+ * `error`, sometimes it's `response: "Internal server error"`. We also
+ * append actionable hints for common 500 causes so the UI can show them.
+ */
+function extractBagsErrorMessage(
+  data: BagsErrorBody & { response?: unknown },
+  status: number,
+): string {
+  if (typeof data.error === "string" && data.error.length > 0) return data.error;
+  if (typeof data.response === "string" && data.response.length > 0) {
+    return `Bags: ${data.response} (HTTP ${status})`;
+  }
+  return `Bags API error (${status})`;
 }
 
 export type CreateTokenInfoResult = {
@@ -124,12 +141,13 @@ export async function bagsCreateTokenInfo(params: {
     body: form,
   });
 
-  const data = (await parseJson(res)) as CreateTokenInfoResult & BagsErrorBody;
-  if (!res.ok || data.success === false) {
-    const msg =
-      typeof data.error === "string" && data.error.length > 0
-        ? data.error
-        : `Bags create-token-info failed (${res.status})`;
+  const data = (await parseJson(res)) as CreateTokenInfoResult & BagsErrorBody & { response?: unknown };
+  if (!res.ok || (data as { success?: boolean }).success === false) {
+    console.error(
+      `[bags-http] ERROR POST /token-launch/create-token-info status=${res.status} body=`,
+      JSON.stringify(data).slice(0, 1500),
+    );
+    const msg = extractBagsErrorMessage(data, res.status);
     throw new BagsApiError(msg, res.status, data);
   }
 

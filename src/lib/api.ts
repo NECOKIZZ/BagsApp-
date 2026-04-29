@@ -54,10 +54,22 @@ export async function postLaunch(
     body: JSON.stringify(payload),
   });
   if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error((err as { error?: string }).error ?? `Launch failed: ${res.status}`);
+    throw await buildApiError(res, `Launch failed: ${res.status}`);
   }
   return res.json() as Promise<LaunchStartResponse>;
+}
+
+/** Pull `error` + `hint` + `step` from a non-2xx server response into one Error. */
+async function buildApiError(res: Response, fallback: string): Promise<Error> {
+  const body = (await res.json().catch(() => ({}))) as {
+    error?: string;
+    hint?: string;
+    step?: string;
+  };
+  const parts = [body.error ?? fallback];
+  if (body.step) parts.push(`(step: ${body.step})`);
+  if (body.hint) parts.push(`— ${body.hint}`);
+  return new Error(parts.join(" "));
 }
 
 export type SubmitTxResponse = {
@@ -84,8 +96,7 @@ export async function submitLaunchSignedTx(
     body: JSON.stringify({ signedTransaction }),
   });
   if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error((err as { error?: string }).error ?? `Submit tx failed: ${res.status}`);
+    throw await buildApiError(res, `Submit tx failed: ${res.status}`);
   }
   return res.json() as Promise<SubmitTxResponse>;
 }
