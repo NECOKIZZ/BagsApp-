@@ -1,5 +1,20 @@
 import type { TweetCardProps } from "../app/components/TweetCard";
 
+/**
+ * Base URL for the backend API.
+ * - In dev, leave VITE_API_BASE unset; Vite proxies `/api/*` to the local server.
+ * - In production, set VITE_API_BASE to the deployed backend, e.g.
+ *   `https://bagsapp-production.up.railway.app`.
+ */
+const API_BASE: string = (() => {
+  const raw = (import.meta.env.VITE_API_BASE ?? "").toString().trim();
+  return raw.replace(/\/$/, "");
+})();
+
+function apiUrl(path: string): string {
+  return `${API_BASE}${path.startsWith("/") ? path : `/${path}`}`;
+}
+
 export type FeedFilter = "all" | "noTokens" | "highScore";
 
 type FeedResponse = {
@@ -9,7 +24,7 @@ type FeedResponse = {
 
 function feedUrl(filter: FeedFilter): string {
   const q = new URLSearchParams({ filter });
-  return `/api/feed?${q}`;
+  return apiUrl(`/api/feed?${q}`);
 }
 
 export async function fetchFeed(filter: FeedFilter): Promise<TweetCardProps[]> {
@@ -48,7 +63,7 @@ export async function postLaunch(
   if (opts?.authToken) {
     headers.Authorization = `Bearer ${opts.authToken}`;
   }
-  const res = await fetch("/api/launches", {
+  const res = await fetch(apiUrl("/api/launches"), {
     method: "POST",
     headers,
     body: JSON.stringify(payload),
@@ -90,7 +105,7 @@ export async function submitLaunchSignedTx(
   if (opts?.authToken) {
     headers.Authorization = `Bearer ${opts.authToken}`;
   }
-  const res = await fetch(`/api/launches/${encodeURIComponent(launchId)}/submit-tx`, {
+  const res = await fetch(apiUrl(`/api/launches/${encodeURIComponent(launchId)}/submit-tx`), {
     method: "POST",
     headers,
     body: JSON.stringify({ signedTransaction }),
@@ -108,7 +123,7 @@ export type WalletNonceResponse = {
 };
 
 export async function requestWalletNonce(address: string): Promise<WalletNonceResponse> {
-  const res = await fetch("/api/auth/nonce", {
+  const res = await fetch(apiUrl("/api/auth/nonce"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ address }),
@@ -125,7 +140,7 @@ export async function verifyWalletSignature(payload: {
   nonce: string;
   signature: string;
 }): Promise<{ ok: true; address: string; token: string }> {
-  const res = await fetch("/api/auth/verify", {
+  const res = await fetch(apiUrl("/api/auth/verify"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
@@ -138,7 +153,7 @@ export async function verifyWalletSignature(payload: {
 }
 
 export async function checkWalletSession(token: string): Promise<{ ok: boolean; address?: string }> {
-  const res = await fetch("/api/auth/session", {
+  const res = await fetch(apiUrl("/api/auth/session"), {
     headers: { Authorization: `Bearer ${token}` },
   });
   if (!res.ok) return { ok: false };
@@ -146,7 +161,7 @@ export async function checkWalletSession(token: string): Promise<{ ok: boolean; 
 }
 
 export async function logoutWalletSession(token: string): Promise<void> {
-  await fetch("/api/auth/logout", {
+  await fetch(apiUrl("/api/auth/logout"), {
     method: "POST",
     headers: { Authorization: `Bearer ${token}` },
   });
