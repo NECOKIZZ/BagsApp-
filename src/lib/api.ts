@@ -1,3 +1,4 @@
+/// <reference types="vite/client" />
 import type { TweetCardProps } from "../app/components/TweetCard";
 
 /**
@@ -17,8 +18,10 @@ function apiUrl(path: string): string {
 
 export type FeedFilter = "all" | "noTokens" | "highScore";
 
+type ServerTweet = Omit<TweetCardProps, "tweetId"> & { tweet_id?: string | null };
+
 type FeedResponse = {
-  tweets: TweetCardProps[];
+  tweets: ServerTweet[];
   filter: FeedFilter;
 };
 
@@ -33,7 +36,7 @@ export async function fetchFeed(filter: FeedFilter): Promise<TweetCardProps[]> {
     throw new Error(`Feed request failed: ${res.status}`);
   }
   const data = (await res.json()) as FeedResponse;
-  return data.tweets;
+  return data.tweets.map(({ tweet_id, ...rest }) => ({ ...rest, tweetId: tweet_id ?? null }));
 }
 
 export type LaunchPayload = {

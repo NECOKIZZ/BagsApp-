@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
-import { useLocation, useNavigate } from "react-router";
-import { ArrowLeft, Coins, Upload, Twitter, Globe, Plus, X } from "lucide-react";
-import { getPhantom } from "../../lib/phantom";
+import { Link, useLocation, useNavigate } from "react-router";
+import { Coins, Upload, Twitter, Globe, Plus, X, User } from "lucide-react";
+import { getPhantom, hasAnySolanaWallet, shortAddress } from "../../lib/phantom";
+import { requestWalletNonce, verifyWalletSignature, logoutWalletSession } from "../../lib/api";
 import { runBagsLaunch, stepLabel } from "../../lib/bagsLaunch";
 
 // ── Bags API limits (from bags-api-token-launch-guide.md) ──────
@@ -94,6 +95,47 @@ export function TokenizePage() {
       cancelled = true;
     };
   }, [walletAddress]);
+
+  const handleConnectWallet = async () => {
+    const provider = getPhantom();
+    if (!provider) {
+      alert(hasAnySolanaWallet() ? "Use Phantom wallet" : "Install Phantom wallet");
+      return;
+    }
+    try {
+      const { publicKey } = await provider.connect();
+      const address = publicKey.toString();
+      if (!provider.signMessage) {
+        alert("This wallet does not support signMessage.");
+        return;
+      }
+      const { nonce, message } = await requestWalletNonce(address);
+      const encodedMessage = new TextEncoder().encode(message);
+      const signed = await provider.signMessage(encodedMessage, "utf8");
+      const signatureB64 = btoa(String.fromCharCode(...signed.signature));
+      const verified = await verifyWalletSignature({ address, nonce, signature: signatureB64 });
+      setAuthToken(verified.token);
+      localStorage.setItem("walletAuthToken", verified.token);
+      localStorage.setItem("walletAddress", verified.address);
+      setWalletAddress(verified.address);
+    } catch (e) {
+      console.error("[wallet] connect failed", e);
+    }
+  };
+
+  const handleDisconnectWallet = async () => {
+    const provider = getPhantom();
+    try {
+      if (authToken) await logoutWalletSession(authToken);
+      await provider?.disconnect();
+    } finally {
+      setAuthToken(null);
+      setWalletAddress(null);
+      setWalletBalanceSol(null);
+      localStorage.removeItem("walletAddress");
+      localStorage.removeItem("walletAuthToken");
+    }
+  };
 
   // ── Validation derived from current form state ─────────────────
   const liquidityNum = Number(liquidity);
@@ -197,77 +239,138 @@ export function TokenizePage() {
   ];
 
   return (
-    <div className="flex flex-col h-full bg-black">
+    <div className="flex flex-col h-full bg-[#05070B]">
       {/* Top Bar */}
-      <div className="flex items-center gap-3 px-4 md:px-5 py-3 bg-white border-b border-gray-200 shadow-sm">
-        <button
-          onClick={() => navigate("/")}
-          className="p-1 hover:bg-gray-100 rounded-lg transition-colors"
-        >
-          <ArrowLeft className="w-5 h-5 text-gray-900" />
-        </button>
-        <h1 className="text-sm font-bold text-gray-900">
-          Launch Token
-        </h1>
-        <div className="ml-auto flex items-center gap-3 text-xs text-gray-500">
-          {walletAddress ? (
-            <>
-              <span className="font-mono">{walletAddress.slice(0, 4)}…{walletAddress.slice(-4)}</span>
-              <span className={walletBalanceSol === null ? "text-gray-400" : walletBalanceSol < requiredSol ? "text-red-600 font-bold" : "text-emerald-600 font-bold"}>
-                {walletBalanceSol === null
-                  ? "balance …"
-                  : `${walletBalanceSol.toFixed(4)} SOL`}
-              </span>
-            </>
+      <div className="flex shrink-0 items-center gap-3 border-b border-[#1a1f2e]/80 bg-[#05070B]/80 backdrop-blur-xl px-4 py-4 z-20">
+        {/* Desktop: centered absolute nav */}
+        <div className="absolute inset-x-0 hidden sm:flex justify-center pointer-events-none">
+          <div className="flex items-center gap-2 pointer-events-auto">
+            <Link
+              to="/"
+              className={`px-5 py-2 text-sm font-bold tracking-widest rounded-lg transition-all ${
+                location.pathname === "/"
+                  ? "bg-[#00FFA3] text-black shadow-[0_0_20px_rgba(0,255,163,0.35)] scale-105"
+                  : "bg-[#0B0F17] text-[#8b92a8] border border-[#1a1f2e] hover:border-[#242b3d] hover:text-white hover:shadow-[0_0_10px_rgba(255,255,255,0.05)]"
+              }`}
+            >
+              FEED
+            </Link>
+            <Link
+              to="/profile"
+              className={`px-5 py-2 text-sm font-bold tracking-widest rounded-lg transition-all ${
+                location.pathname === "/profile"
+                  ? "bg-[#00FFA3] text-black shadow-[0_0_20px_rgba(0,255,163,0.35)] scale-105"
+                  : "bg-[#0B0F17] text-[#8b92a8] border border-[#1a1f2e] hover:border-[#242b3d] hover:text-white hover:shadow-[0_0_10px_rgba(255,255,255,0.05)]"
+              }`}
+            >
+              PORTFOLIO
+            </Link>
+          </div>
+        </div>
+
+        {/* Mobile: inline compact nav */}
+        <div className="flex sm:hidden items-center gap-1.5">
+          <Link
+            to="/"
+            className={`px-2 py-1 text-[10px] font-bold tracking-widest rounded-md transition-all ${
+              location.pathname === "/"
+                ? "bg-[#00FFA3] text-black shadow-[0_0_12px_rgba(0,255,163,0.35)] scale-105"
+                : "bg-[#0B0F17] text-[#8b92a8] border border-[#1a1f2e] hover:border-[#242b3d] hover:text-white"
+            }`}
+          >
+            FEED
+          </Link>
+          <Link
+            to="/profile"
+            className={`px-2 py-1 text-[10px] font-bold tracking-widest rounded-md transition-all ${
+              location.pathname === "/profile"
+                ? "bg-[#00FFA3] text-black shadow-[0_0_12px_rgba(0,255,163,0.35)] scale-105"
+                : "bg-[#0B0F17] text-[#8b92a8] border border-[#1a1f2e] hover:border-[#242b3d] hover:text-white"
+            }`}
+          >
+            PORTFOLIO
+          </Link>
+        </div>
+        <div className="flex-1" />
+        <div className="flex items-center gap-2">
+          {!walletAddress ? (
+            <button
+              type="button"
+              onClick={() => void handleConnectWallet()}
+              className="rounded-lg bg-[#00FFA3] px-3 py-1.5 text-xs font-bold text-black shadow-[0_0_15px_rgba(0,255,163,0.25)] transition-all hover:scale-105 hover:bg-[#33ffb5] hover:shadow-[0_0_20px_rgba(0,255,163,0.4)] md:px-4 md:py-2 md:text-sm"
+            >
+              Connect wallet
+            </button>
           ) : (
-            <span>Wallet not connected</span>
+            <>
+              <div className="hidden items-center gap-1.5 rounded-lg border border-[#1a1f2e] bg-[#0B0F17] px-3 py-1.5 md:flex">
+                <span className="text-xs text-[#5a6078]">Wallet:</span>
+                <span className="text-sm font-bold text-white">{shortAddress(walletAddress)}</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => void handleDisconnectWallet()}
+                className="rounded-lg border border-[#1a1f2e] bg-[#0B0F17] px-3 py-1.5 text-xs font-bold text-[#8b92a8] transition-colors hover:bg-[#151a26] hover:text-white md:px-4 md:py-2 md:text-sm"
+                title="Disconnect wallet"
+              >
+                Disconnect
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleDisconnectWallet()}
+                className="flex h-8 w-8 items-center justify-center rounded-full border border-[#1a1f2e] bg-[#0B0F17] transition-all hover:scale-110 hover:border-[#00FFA3]/50 hover:shadow-[0_0_10px_rgba(0,255,163,0.2)] md:h-9 md:w-9"
+                title="Disconnect wallet"
+              >
+                <User className="h-4 w-4 text-[#8b92a8] md:h-5 md:w-5" />
+              </button>
+            </>
           )}
         </div>
       </div>
 
       {/* Content */}
-      <div className="flex-1 overflow-y-auto px-3 md:px-5 py-4 md:py-6">
+      <div className="flex-1 overflow-y-auto px-4 py-4">
         <div className="max-w-2xl mx-auto">
           {/* Info Card */}
-          <div className="bg-white border border-gray-200 rounded-2xl p-4 md:p-5 mb-4 md:mb-6 shadow-lg">
+          <div className="rounded-xl border border-[#1a1f2e] bg-[#0B0F17]/80 backdrop-blur-sm p-4 md:p-5 mb-4">
             <div className="flex items-center gap-3 mb-3">
-              <div className="w-10 h-10 md:w-12 md:h-12 rounded-full bg-black flex items-center justify-center shadow-lg">
-                <Coins className="w-5 h-5 md:w-6 md:h-6 text-white" />
+              <div className="w-10 h-10 md:w-12 md:h-12 rounded-full bg-[#00FFA3]/10 border border-[#00FFA3]/20 flex items-center justify-center">
+                <Coins className="w-5 h-5 md:w-6 md:h-6 text-[#00FFA3]" />
               </div>
               <div className="flex-1 min-w-0">
-                <div className="text-sm md:text-base font-bold text-gray-800">
+                <div className="text-sm md:text-base font-bold text-white">
                   Tokenizing narrative
                 </div>
-                <div className="text-xs md:text-sm text-gray-500 truncate">
+                <div className="text-xs md:text-sm text-[#5a6078] truncate">
                   Create a new token for this trending topic
                 </div>
               </div>
             </div>
-            <div className="bg-gray-50 rounded-xl p-3 border border-gray-200">
-              <div className="text-xs text-gray-600 mb-1 font-medium">
+            <div className="rounded-lg border border-[#1a1f2e] bg-[#05070B]/60 p-3">
+              <div className="text-[10px] font-bold uppercase tracking-wider text-[#5a6078] mb-1">
                 Narrative
               </div>
-              <div className="text-sm text-gray-800 font-medium break-words">
+              <div className="text-sm text-[#8b92a8] font-medium break-words">
                 {narrative}
               </div>
             </div>
           </div>
 
           {/* Form */}
-          <div className="bg-white border border-gray-200 rounded-2xl p-4 md:p-5 space-y-4 shadow-lg">
+          <div className="rounded-xl border border-[#1a1f2e] bg-[#0B0F17]/80 backdrop-blur-sm p-4 md:p-5 space-y-4">
             {/* Token Image */}
             <div>
-              <label className="block text-xs text-gray-700 mb-2 font-medium">
+              <label className="block text-[10px] font-bold uppercase tracking-wider text-[#5a6078] mb-2">
                 Token Image
               </label>
               <div className="flex items-center gap-4">
                 {imagePreview ? (
-                  <div className="w-20 h-20 md:w-24 md:h-24 rounded-xl overflow-hidden border-2 border-gray-300">
+                  <div className="w-20 h-20 md:w-24 md:h-24 rounded-xl overflow-hidden border border-[#1a1f2e]">
                     <img src={imagePreview} alt="Token" className="w-full h-full object-cover" />
                   </div>
                 ) : (
-                  <div className="w-20 h-20 md:w-24 md:h-24 rounded-xl border-2 border-dashed border-gray-300 flex items-center justify-center bg-gray-50">
-                    <Upload className="w-6 h-6 md:w-8 md:h-8 text-gray-400" />
+                  <div className="w-20 h-20 md:w-24 md:h-24 rounded-xl border border-dashed border-[#1a1f2e] flex items-center justify-center bg-[#05070B]/40">
+                    <Upload className="w-6 h-6 md:w-8 md:h-8 text-[#5a6078]" />
                   </div>
                 )}
                 <label className="flex-1">
@@ -277,10 +380,10 @@ export function TokenizePage() {
                     onChange={handleImageUpload}
                     className="hidden"
                   />
-                  <div className="px-4 py-2 text-sm font-medium border-2 border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 transition-all cursor-pointer text-center">
-                    Upload Image (preview only)
+                  <div className="px-4 py-2 text-xs font-bold border border-[#1a1f2e] rounded-lg text-[#8b92a8] hover:bg-[#151a26] transition-all cursor-pointer text-center uppercase tracking-wider">
+                    Upload Image
                   </div>
-                  <p className="text-xs text-gray-500 mt-1">For Bags launch, paste a public image URL below.</p>
+                  <p className="text-[11px] text-[#5a6078] mt-1">Paste a public image URL below for Bags launch.</p>
                 </label>
               </div>
               <input
@@ -288,15 +391,15 @@ export function TokenizePage() {
                 value={imageUrl}
                 onChange={(e) => setImageUrl(e.target.value)}
                 placeholder="https://example.com/token-image.png (optional)"
-                className="mt-3 w-full px-3 py-2 text-sm border-2 border-gray-300 rounded-lg bg-white text-gray-800 placeholder:text-gray-400 focus:border-black outline-none transition-colors"
+                className="mt-3 w-full px-3 py-2 text-sm border border-[#1a1f2e] rounded-lg bg-[#05070B] text-white placeholder:text-[#5a6078] focus:border-[#00FFA3] outline-none transition-colors"
               />
             </div>
 
             {/* Token Name */}
             <div>
-              <label className="flex items-center justify-between text-xs text-gray-700 mb-1.5 font-medium">
+              <label className="flex items-center justify-between text-[10px] font-bold uppercase tracking-wider text-[#5a6078] mb-1.5">
                 <span>Token Name *</span>
-                <span className={tokenName.length > NAME_MAX ? "text-red-600 font-bold" : "text-gray-400"}>
+                <span className={tokenName.length > NAME_MAX ? "text-red-400 font-bold" : "text-[#3a4058]"}>
                   {tokenName.length}/{NAME_MAX}
                 </span>
               </label>
@@ -306,15 +409,15 @@ export function TokenizePage() {
                 onChange={(e) => setTokenName(e.target.value)}
                 maxLength={NAME_MAX}
                 placeholder="e.g. RWASOLANA"
-                className="w-full px-3 py-2 md:py-2.5 text-sm border-2 border-gray-300 rounded-lg bg-white text-gray-800 placeholder:text-gray-400 focus:border-black outline-none transition-colors font-medium"
+                className="w-full px-3 py-2 md:py-2.5 text-sm border border-[#1a1f2e] rounded-lg bg-[#05070B] text-white placeholder:text-[#5a6078] focus:border-[#00FFA3] outline-none transition-colors"
               />
             </div>
 
             {/* Ticker */}
             <div>
-              <label className="flex items-center justify-between text-xs text-gray-700 mb-1.5 font-medium">
+              <label className="flex items-center justify-between text-[10px] font-bold uppercase tracking-wider text-[#5a6078] mb-1.5">
                 <span>Ticker Symbol *</span>
-                <span className={ticker.length > SYMBOL_MAX ? "text-red-600 font-bold" : "text-gray-400"}>
+                <span className={ticker.length > SYMBOL_MAX ? "text-red-400 font-bold" : "text-[#3a4058]"}>
                   {ticker.length}/{SYMBOL_MAX}
                 </span>
               </label>
@@ -324,16 +427,16 @@ export function TokenizePage() {
                 onChange={(e) => setTicker(e.target.value.toUpperCase().replace(/\$/g, ""))}
                 placeholder="e.g. RWAS"
                 maxLength={SYMBOL_MAX}
-                className="w-full px-3 py-2 md:py-2.5 text-sm border-2 border-gray-300 rounded-lg bg-white text-gray-800 placeholder:text-gray-400 focus:border-black outline-none transition-colors font-medium"
+                className="w-full px-3 py-2 md:py-2.5 text-sm border border-[#1a1f2e] rounded-lg bg-[#05070B] text-white placeholder:text-[#5a6078] focus:border-[#00FFA3] outline-none transition-colors"
               />
-              <p className="text-[11px] text-gray-500 mt-1">No $ prefix. Auto-uppercased.</p>
+              <p className="text-[11px] text-[#5a6078] mt-1">No $ prefix. Auto-uppercased.</p>
             </div>
 
             {/* Description */}
             <div>
-              <label className="flex items-center justify-between text-xs text-gray-700 mb-1.5 font-medium">
+              <label className="flex items-center justify-between text-[10px] font-bold uppercase tracking-wider text-[#5a6078] mb-1.5">
                 <span>Description</span>
-                <span className={description.length > DESCRIPTION_MAX ? "text-red-600 font-bold" : "text-gray-400"}>
+                <span className={description.length > DESCRIPTION_MAX ? "text-red-400 font-bold" : "text-[#3a4058]"}>
                   {description.length}/{DESCRIPTION_MAX}
                 </span>
               </label>
@@ -343,14 +446,14 @@ export function TokenizePage() {
                 maxLength={DESCRIPTION_MAX}
                 placeholder="Describe your token and its purpose..."
                 rows={4}
-                className="w-full px-3 py-2 md:py-2.5 text-sm border-2 border-gray-300 rounded-lg bg-white text-gray-800 placeholder:text-gray-400 focus:border-black outline-none transition-colors font-medium resize-none"
+                className="w-full px-3 py-2 md:py-2.5 text-sm border border-[#1a1f2e] rounded-lg bg-[#05070B] text-white placeholder:text-[#5a6078] focus:border-[#00FFA3] outline-none transition-colors resize-none"
               />
             </div>
 
             {/* Supply and Decimals Row */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
-                <label className="block text-xs text-gray-700 mb-1.5 font-medium">
+                <label className="block text-[10px] font-bold uppercase tracking-wider text-[#5a6078] mb-1.5">
                   Total Supply *
                 </label>
                 <input
@@ -359,12 +462,12 @@ export function TokenizePage() {
                   onChange={(e) => setSupply(e.target.value)}
                   placeholder="1000000000"
                   min="1"
-                  className="w-full px-3 py-2 md:py-2.5 text-sm border-2 border-gray-300 rounded-lg bg-white text-gray-800 placeholder:text-gray-400 focus:border-black outline-none transition-colors font-medium"
+                  className="w-full px-3 py-2 md:py-2.5 text-sm border border-[#1a1f2e] rounded-lg bg-[#05070B] text-white placeholder:text-[#5a6078] focus:border-[#00FFA3] outline-none transition-colors"
                 />
               </div>
 
               <div>
-                <label className="block text-xs text-gray-700 mb-1.5 font-medium">
+                <label className="block text-[10px] font-bold uppercase tracking-wider text-[#5a6078] mb-1.5">
                   Decimals *
                 </label>
                 <input
@@ -374,14 +477,14 @@ export function TokenizePage() {
                   placeholder="9"
                   min="0"
                   max="18"
-                  className="w-full px-3 py-2 md:py-2.5 text-sm border-2 border-gray-300 rounded-lg bg-white text-gray-800 placeholder:text-gray-400 focus:border-black outline-none transition-colors font-medium"
+                  className="w-full px-3 py-2 md:py-2.5 text-sm border border-[#1a1f2e] rounded-lg bg-[#05070B] text-white placeholder:text-[#5a6078] focus:border-[#00FFA3] outline-none transition-colors"
                 />
               </div>
             </div>
 
             {/* Initial Liquidity */}
             <div>
-              <label className="block text-xs text-gray-700 mb-1.5 font-medium">
+              <label className="block text-[10px] font-bold uppercase tracking-wider text-[#5a6078] mb-1.5">
                 Initial Liquidity (SOL) *
               </label>
               <input
@@ -391,73 +494,73 @@ export function TokenizePage() {
                 placeholder="0.5"
                 min="0.1"
                 step="0.1"
-                className="w-full px-3 py-2 md:py-2.5 text-sm border-2 border-gray-300 rounded-lg bg-white text-gray-800 placeholder:text-gray-400 focus:border-black outline-none transition-colors font-medium"
+                className="w-full px-3 py-2 md:py-2.5 text-sm border border-[#1a1f2e] rounded-lg bg-[#05070B] text-white placeholder:text-[#5a6078] focus:border-[#00FFA3] outline-none transition-colors"
               />
-              <p className="text-xs text-gray-500 mt-1">Bags minimum: {MIN_LIQUIDITY_SOL} SOL. Wallet should hold initial buy + ~{SOL_BUFFER} SOL for fees.</p>
+              <p className="text-[11px] text-[#5a6078] mt-1">Bags minimum: {MIN_LIQUIDITY_SOL} SOL. Wallet should hold initial buy + ~{SOL_BUFFER} SOL for fees.</p>
             </div>
 
             {/* Social Links Section */}
-            <div className="pt-2 border-t border-gray-200">
-              <h3 className="text-sm font-bold text-gray-800 mb-3">Social Links (Optional)</h3>
+            <div className="pt-2 border-t border-[#1a1f2e]/60">
+              <h3 className="text-xs font-bold uppercase tracking-wider text-[#5a6078] mb-3">Social Links (Optional)</h3>
               
               {/* Website */}
               <div className="mb-4">
-                <label className="block text-xs text-gray-700 mb-1.5 font-medium">
+                <label className="block text-[10px] font-bold uppercase tracking-wider text-[#5a6078] mb-1.5">
                   Website
                 </label>
                 <div className="relative">
-                  <Globe className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+                  <Globe className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#5a6078]" />
                   <input
                     type="url"
                     value={website}
                     onChange={(e) => setWebsite(e.target.value)}
                     placeholder="https://yourwebsite.com"
-                    className="w-full pl-10 pr-3 py-2 md:py-2.5 text-sm border-2 border-gray-300 rounded-lg bg-white text-gray-800 placeholder:text-gray-400 focus:border-black outline-none transition-colors font-medium"
+                    className="w-full pl-10 pr-3 py-2 md:py-2.5 text-sm border border-[#1a1f2e] rounded-lg bg-[#05070B] text-white placeholder:text-[#5a6078] focus:border-[#00FFA3] outline-none transition-colors"
                   />
                 </div>
               </div>
 
               {/* X (Twitter) */}
               <div>
-                <label className="block text-xs text-gray-700 mb-1.5 font-medium">
+                <label className="block text-[10px] font-bold uppercase tracking-wider text-[#5a6078] mb-1.5">
                   X (Twitter)
                 </label>
                 <div className="relative">
-                  <Twitter className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+                  <Twitter className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#5a6078]" />
                   <input
                     type="text"
                     value={twitter}
                     onChange={(e) => setTwitter(e.target.value)}
                     placeholder="@yourhandle"
-                    className="w-full pl-10 pr-3 py-2 md:py-2.5 text-sm border-2 border-gray-300 rounded-lg bg-white text-gray-800 placeholder:text-gray-400 focus:border-black outline-none transition-colors font-medium"
+                    className="w-full pl-10 pr-3 py-2 md:py-2.5 text-sm border border-[#1a1f2e] rounded-lg bg-[#05070B] text-white placeholder:text-[#5a6078] focus:border-[#00FFA3] outline-none transition-colors"
                   />
                 </div>
               </div>
             </div>
 
             {/* Fee Sharing Option */}
-            <div className="pt-2 border-t border-gray-200">
+            <div className="pt-2 border-t border-[#1a1f2e]/60">
               <div className="flex items-start gap-3">
                 <button
                   onClick={() => setFeeSharing(!feeSharing)}
-                  className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-black focus:ring-offset-2 ${
-                    feeSharing ? 'bg-black' : 'bg-gray-300'
+                  className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+                    feeSharing ? 'bg-[#00FFA3]' : 'bg-[#1a1f2e]'
                   }`}
                   role="switch"
                   aria-checked={feeSharing}
                 >
                   <span
-                    className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
+                    className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-[#05070B] shadow ring-0 transition duration-200 ease-in-out ${
                       feeSharing ? 'translate-x-5' : 'translate-x-0'
                     }`}
                   />
                 </button>
                 <div className="flex-1">
-                  <label className="text-sm font-medium text-gray-800 cursor-pointer" onClick={() => setFeeSharing(!feeSharing)}>
+                  <label className="text-sm font-bold text-white cursor-pointer" onClick={() => setFeeSharing(!feeSharing)}>
                     Fee Sharing
                   </label>
-                  <p className="text-xs text-gray-500 mt-0.5">
-                    Share fees with up to 100 creators, apps or wallets
+                  <p className="text-[11px] text-[#5a6078] mt-0.5">
+                    Share fees with up to 100 apps or wallets
                   </p>
                 </div>
               </div>
@@ -465,14 +568,14 @@ export function TokenizePage() {
 
             {/* Fee Recipients */}
             {feeSharing && (
-              <div className="pt-2 border-t border-gray-200">
+              <div className="pt-2 border-t border-[#1a1f2e]/60">
                 <div className="flex items-center justify-between mb-3">
-                  <h3 className="text-sm font-bold text-gray-800">Fee Recipients</h3>
-                  <span className={feeBpsValid ? "text-xs text-emerald-700 font-semibold" : "text-xs text-red-600 font-bold"}>
+                  <h3 className="text-xs font-bold uppercase tracking-wider text-[#5a6078]">Fee Recipients</h3>
+                  <span className={feeBpsValid ? "text-[10px] font-bold text-[#00FFA3] bg-[#00FFA3]/10 border border-[#00FFA3]/20 px-2 py-0.5 rounded" : "text-[10px] font-bold text-red-400 bg-red-400/10 border border-red-400/20 px-2 py-0.5 rounded"}>
                     Total: {(feeBpsTotal / 100).toFixed(2)}% / 100%
                   </span>
                 </div>
-                <p className="text-xs text-gray-500 mb-3">Per Bags rule: percentages must sum to exactly 100%. Max 100 recipients. Note: usernames need to map to wallet pubkeys server-side; not yet wired.</p>
+                <p className="text-[11px] text-[#5a6078] mb-3">Percentages must sum to exactly 100%. Max 100 recipients.</p>
                 
                 <div className="space-y-2">
                   {feeRecipients.map((recipient, index) => (
@@ -482,7 +585,7 @@ export function TokenizePage() {
                         value={recipient.username}
                         onChange={(e) => updateFeeRecipient(index, 'username', e.target.value)}
                         placeholder="Username"
-                        className="w-full px-3 py-2 md:py-2.5 text-sm border-2 border-gray-300 rounded-lg bg-white text-gray-800 placeholder:text-gray-400 focus:border-black outline-none transition-colors font-medium"
+                        className="w-full px-3 py-2 text-sm border border-[#1a1f2e] rounded-lg bg-[#05070B] text-white placeholder:text-[#5a6078] focus:border-[#00FFA3] outline-none transition-colors"
                       />
                       <input
                         type="number"
@@ -491,41 +594,41 @@ export function TokenizePage() {
                         placeholder="Percentage"
                         min="0"
                         max="100"
-                        className="w-full px-3 py-2 md:py-2.5 text-sm border-2 border-gray-300 rounded-lg bg-white text-gray-800 placeholder:text-gray-400 focus:border-black outline-none transition-colors font-medium"
+                        className="w-full px-3 py-2 text-sm border border-[#1a1f2e] rounded-lg bg-[#05070B] text-white placeholder:text-[#5a6078] focus:border-[#00FFA3] outline-none transition-colors"
                       />
                       <button
                         onClick={() => removeFeeRecipient(index)}
-                        className="p-1 hover:bg-gray-100 rounded-lg transition-colors"
+                        className="flex h-8 w-8 items-center justify-center rounded-lg border border-[#1a1f2e] bg-[#0B0F17] transition-all hover:border-[#242b3d] text-[#8b92a8]"
                       >
-                        <X className="w-5 h-5 text-gray-900" />
+                        <X className="w-4 h-4" />
                       </button>
                     </div>
                   ))}
                 </div>
                 <button
                   onClick={addFeeRecipient}
-                  className="mt-2 px-4 py-2.5 text-sm font-medium border-2 border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 transition-all"
+                  className="mt-2 px-4 py-2 text-xs font-bold uppercase tracking-wider border border-[#1a1f2e] rounded-lg text-[#8b92a8] hover:bg-[#151a26] transition-all"
                 >
-                  <Plus className="w-4 h-4 mr-1" />
+                  <Plus className="w-3 h-3 inline mr-1" />
                   Add Recipient
                 </button>
               </div>
             )}
 
             {/* Ownership Option */}
-            <div className="pt-2 border-t border-gray-200">
-              <h3 className="text-sm font-bold text-gray-800 mb-3">Ownership</h3>
-              <p className="text-xs text-gray-500 mb-3">Buy the token before anyone else</p>
+            <div className="pt-2 border-t border-[#1a1f2e]/60">
+              <h3 className="text-xs font-bold uppercase tracking-wider text-[#5a6078] mb-3">Ownership</h3>
+              <p className="text-[11px] text-[#5a6078] mb-3">Buy the token before anyone else</p>
               
               <div className="grid grid-cols-3 md:grid-cols-6 gap-2">
                 {ownershipOptions.map((option) => (
                   <button
                     key={option.value}
                     onClick={() => setOwnership(option.value)}
-                    className={`px-4 py-2.5 text-sm font-medium rounded-lg border-2 transition-all ${
+                    className={`px-4 py-2 text-xs font-bold rounded-lg border transition-all uppercase tracking-wider ${
                       ownership === option.value
-                        ? 'bg-black text-white border-black'
-                        : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                        ? 'bg-[#00FFA3] text-black border-[#00FFA3]'
+                        : 'bg-[#05070B] text-[#8b92a8] border-[#1a1f2e] hover:border-[#242b3d]'
                     }`}
                   >
                     {option.label}
@@ -535,30 +638,26 @@ export function TokenizePage() {
             </div>
 
             {/* Bags requirements panel */}
-            <div className="bg-gray-50 border border-gray-200 rounded-xl p-3 md:p-4 text-xs text-gray-700 space-y-1.5">
-              <p className="font-bold text-gray-800">Bags launch requirements (from API guide):</p>
+            <div className="rounded-xl border border-[#1a1f2e] bg-[#05070B]/60 p-3 md:p-4 text-[11px] text-[#8b92a8] space-y-1.5">
+              <p className="font-bold text-white text-xs uppercase tracking-wider">Bags Launch Requirements</p>
               <ul className="list-disc pl-5 space-y-0.5">
                 <li>Name ≤ {NAME_MAX} chars; ticker ≤ {SYMBOL_MAX} chars (no $); description ≤ {DESCRIPTION_MAX} chars.</li>
                 <li>Initial liquidity ≥ {MIN_LIQUIDITY_SOL} SOL.</li>
-                <li>Wallet must hold roughly <span className="font-bold">{requiredSol.toFixed(2)} SOL</span> (initial buy + tx fees + rent).</li>
+                <li>Wallet must hold roughly <span className="font-bold text-white">{requiredSol.toFixed(2)} SOL</span> (initial buy + tx fees + rent).</li>
                 <li>If fee sharing is on, recipient percentages must sum to exactly 100%.</li>
                 <li>Image URL must be publicly reachable, &lt; 15 MB.</li>
-                <li>Image upload preview is local-only; for the actual launch paste a public URL.</li>
               </ul>
-              <p className="text-[11px] text-gray-500 pt-1">
-                <span className="font-semibold">Cosmetic-only fields:</span> supply, decimals, ownership %, fee-sharing usernames — not yet plumbed through to Bags.
-              </p>
             </div>
 
             {balanceWarning ? (
-              <div className="bg-red-50 border border-red-200 rounded-xl p-3 text-xs text-red-800 font-medium">
+              <div className="rounded-xl border border-red-400/30 bg-red-400/10 p-3 text-xs text-red-400 font-medium">
                 {balanceWarning}
               </div>
             ) : null}
 
             {validationIssues.length > 0 ? (
-              <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-xs text-amber-900">
-                <p className="font-bold mb-1">Fix before launching:</p>
+              <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-400">
+                <p className="font-bold mb-1 text-white">Fix before launching:</p>
                 <ul className="list-disc pl-5 space-y-0.5">
                   {validationIssues.map((issue, i) => (
                     <li key={i}>{issue}</li>
@@ -568,17 +667,17 @@ export function TokenizePage() {
             ) : null}
 
             {errorMsg ? (
-              <div className="bg-red-50 border border-red-200 rounded-xl p-3 text-sm text-red-700">
+              <div className="rounded-xl border border-red-400/30 bg-red-400/10 p-3 text-sm text-red-400">
                 {errorMsg}
               </div>
             ) : null}
             {successMsg ? (
-              <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-3 text-sm text-emerald-800">
+              <div className="rounded-xl border border-[#00FFA3]/30 bg-[#00FFA3]/10 p-3 text-sm text-[#00FFA3]">
                 {successMsg}
               </div>
             ) : null}
             {launching && launchStep ? (
-              <div className="bg-sky-50 border border-sky-200 rounded-xl p-3 text-sm text-sky-800">
+              <div className="rounded-xl border border-[#00FFA3]/30 bg-[#00FFA3]/10 p-3 text-sm text-[#00FFA3]">
                 {launchStep}
               </div>
             ) : null}
@@ -587,14 +686,14 @@ export function TokenizePage() {
             <div className="flex flex-col md:flex-row gap-2 md:gap-3 pt-2">
               <button
                 onClick={() => navigate("/")}
-                className="w-full md:flex-1 px-4 py-2.5 md:py-3 text-sm font-medium border-2 border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 transition-all"
+                className="w-full md:flex-1 px-4 py-2 text-xs font-bold uppercase tracking-wider border border-[#1a1f2e] rounded-lg text-[#8b92a8] hover:bg-[#151a26] transition-all active:translate-y-[1px]"
               >
                 Cancel
               </button>
               <button
                 onClick={() => void handleLaunch()}
                 disabled={!canLaunch}
-                className="w-full md:flex-1 px-6 py-2.5 md:py-3 text-sm md:text-base font-bold rounded-lg bg-[#4ade80] text-white hover:bg-[#22c55e] transition-all shadow-[0_4px_14px_0_rgba(74,222,128,0.5)] hover:shadow-[0_6px_20px_rgba(74,222,128,0.7)] disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-[#4ade80] disabled:shadow-[0_4px_14px_0_rgba(74,222,128,0.5)]"
+                className="w-full md:flex-1 px-6 py-2 text-xs font-bold uppercase tracking-wider rounded-lg bg-[#00FFA3] text-black hover:bg-[#33ffb5] transition-all active:translate-y-[1px] disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {launching ? "Launching…" : "Launch Token"}
               </button>

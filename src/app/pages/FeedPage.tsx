@@ -1,7 +1,10 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { Link, useLocation } from "react-router";
 import { TweetCard } from "../components/TweetCard";
 import type { TweetCardProps } from "../components/TweetCard";
-import { ChevronDown, RefreshCw, User } from "lucide-react";
+import { TweetCardSkeleton } from "../components/TweetCardSkeleton";
+import { MarketTerminal } from "../components/MarketTerminal";
+import { Inbox, RefreshCw, TrendingUp, User } from "lucide-react";
 import {
   checkWalletSession,
   fetchFeed,
@@ -13,16 +16,16 @@ import {
 import { getPhantom, hasAnySolanaWallet, shortAddress } from "../../lib/phantom";
 
 export function FeedPage() {
+  const location = useLocation();
   const [filter, setFilter] = useState<FeedFilter>("all");
   const [tweets, setTweets] = useState<TweetCardProps[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  /** Non-error notices (e.g. 201 launch saved without Bags) — not the red/amber feed error bar */
   const [notice, setNotice] = useState<string | null>(null);
-  const [isFilterOpen, setIsFilterOpen] = useState(false);
   const [walletAddress, setWalletAddress] = useState<string | null>(null);
   const [authToken, setAuthToken] = useState<string | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [selectedNarrative, setSelectedNarrative] = useState<string | null>(null);
 
   const loadFeed = useCallback(async (nextFilter: FeedFilter, opts?: { silent?: boolean }) => {
     if (!opts?.silent) {
@@ -84,13 +87,17 @@ export function FeedPage() {
     }
 
     if (!provider) return;
-    provider.connect({ onlyIfTrusted: true }).catch(() => {
-      // Silent fail: user may not be connected yet.
-    });
+    provider
+      .connect({ onlyIfTrusted: true })
+      .then(({ publicKey }) => {
+        setWalletAddress(publicKey.toString());
+      })
+      .catch(() => {
+        // Silent fail: user may not be connected yet.
+      });
   }, []);
 
-  const filterLabel =
-    filter === "all" ? "All" : filter === "noTokens" ? "No tokens yet" : "High score";
+  const visibleTweets = tweets;
 
   const handleRefresh = () => {
     setIsRefreshing(true);
@@ -167,80 +174,102 @@ export function FeedPage() {
     }
   };
 
+  const stats = useMemo(() => {
+    const uniqueNarratives = new Set(tweets.map((t) => t.narrative));
+    const tokensCount = tweets.reduce((acc, t) => acc + (t.tokens?.length ?? 0), 0);
+    return {
+      tracked: tweets.length,
+      moving: tokensCount,
+      venues: uniqueNarratives.size,
+    };
+  }, [tweets]);
+
   return (
-    <div className="relative flex h-full min-h-0 flex-col bg-black">
-      <div className="flex shrink-0 items-center gap-2 border-b border-zinc-800 bg-black px-4 py-3">
-        <div className="flex items-center gap-2 rounded-full border border-zinc-800 bg-zinc-900 px-2.5 py-1">
-          <div className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-400 shadow-lg shadow-emerald-400/50" />
-          <span className="text-xs font-semibold text-white">LIVE</span>
-        </div>
+    <div className="relative flex h-full min-h-0 flex-col">
+      {/* Top Bar */}
+      <div className="flex shrink-0 items-center gap-3 border-b border-[#1a1f2e]/80 bg-[#05070B]/80 backdrop-blur-xl px-4 py-4 z-20">
+        {/* Refresh */}
         <button
           type="button"
           onClick={handleRefresh}
           disabled={isRefreshing || loading}
-          className="flex h-8 w-8 items-center justify-center rounded-full border border-zinc-800 bg-zinc-900 transition-all hover:scale-110 hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-50 md:h-9 md:w-9"
+          className="flex h-8 w-8 items-center justify-center rounded-lg border border-[#1a1f2e] bg-[#0B0F17] transition-all hover:border-[#242b3d] hover:shadow-[0_0_10px_rgba(255,255,255,0.05)] disabled:cursor-not-allowed disabled:opacity-50 md:h-9 md:w-9"
           title="Refresh feed"
         >
-          <RefreshCw className={`h-4 w-4 text-white ${isRefreshing ? "animate-spin" : ""}`} />
+          <RefreshCw className={`h-4 w-4 text-[#8b92a8] ${isRefreshing ? "animate-spin" : ""}`} />
         </button>
-        <div className="relative">
-          <button
-            type="button"
-            onClick={() => setIsFilterOpen(!isFilterOpen)}
-            className={`flex items-center gap-2 rounded-xl px-3 py-2 text-xs font-bold transition-all md:px-4 md:text-sm ${
-              filter !== "all"
-                ? "bg-white text-black shadow-[0_4px_14px_0_rgba(255,255,255,0.35)]"
-                : "border border-zinc-800 bg-zinc-900 text-zinc-400"
+
+        {/* Desktop: centered absolute nav */}
+        <div className="absolute inset-x-0 hidden sm:flex justify-center pointer-events-none">
+          <div className="flex items-center gap-2 pointer-events-auto">
+            <Link
+              to="/"
+              className={`px-5 py-2 text-sm font-bold tracking-widest rounded-lg transition-all ${
+                location.pathname === "/"
+                  ? "bg-[#00FFA3] text-black shadow-[0_0_20px_rgba(0,255,163,0.35)] scale-105"
+                  : "bg-[#0B0F17] text-[#8b92a8] border border-[#1a1f2e] hover:border-[#242b3d] hover:text-white hover:shadow-[0_0_10px_rgba(255,255,255,0.05)]"
+              }`}
+            >
+              FEED
+            </Link>
+            <Link
+              to="/profile"
+              className={`px-5 py-2 text-sm font-bold tracking-widest rounded-lg transition-all ${
+                location.pathname === "/profile"
+                  ? "bg-[#00FFA3] text-black shadow-[0_0_20px_rgba(0,255,163,0.35)] scale-105"
+                  : "bg-[#0B0F17] text-[#8b92a8] border border-[#1a1f2e] hover:border-[#242b3d] hover:text-white hover:shadow-[0_0_10px_rgba(255,255,255,0.05)]"
+              }`}
+            >
+              PORTFOLIO
+            </Link>
+          </div>
+        </div>
+
+        {/* Mobile: inline compact nav */}
+        <div className="flex sm:hidden items-center gap-1.5">
+          <Link
+            to="/"
+            className={`px-2 py-1 text-[10px] font-bold tracking-widest rounded-md transition-all ${
+              location.pathname === "/"
+                ? "bg-[#00FFA3] text-black shadow-[0_0_12px_rgba(0,255,163,0.35)] scale-105"
+                : "bg-[#0B0F17] text-[#8b92a8] border border-[#1a1f2e] hover:border-[#242b3d] hover:text-white"
             }`}
           >
-            {filterLabel}
-            <ChevronDown className={`h-4 w-4 transition-transform ${isFilterOpen ? "rotate-180" : ""}`} />
-          </button>
-          {isFilterOpen ? (
-            <div className="absolute left-0 z-30 mt-2 w-48 overflow-hidden rounded-xl border border-zinc-800 bg-zinc-900 shadow-xl">
-              {(
-                [
-                  ["all", "All"],
-                  ["noTokens", "No tokens yet"],
-                  ["highScore", "High score"],
-                ] as const
-              ).map(([key, label]) => (
-                <button
-                  key={key}
-                  type="button"
-                  onClick={() => {
-                    setFilter(key);
-                    setIsFilterOpen(false);
-                  }}
-                  className={`w-full px-4 py-3 text-left text-sm font-bold transition-all ${
-                    filter === key ? "bg-white text-black" : "text-zinc-400 hover:bg-zinc-800"
-                  }`}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-          ) : null}
+            FEED
+          </Link>
+          <Link
+            to="/profile"
+            className={`px-2 py-1 text-[10px] font-bold tracking-widest rounded-md transition-all ${
+              location.pathname === "/profile"
+                ? "bg-[#00FFA3] text-black shadow-[0_0_12px_rgba(0,255,163,0.35)] scale-105"
+                : "bg-[#0B0F17] text-[#8b92a8] border border-[#1a1f2e] hover:border-[#242b3d] hover:text-white"
+            }`}
+          >
+            PORTFOLIO
+          </Link>
         </div>
+
+        {/* Spacer pushes wallet to right */}
+        <div className="flex-1" />
         <div className="ml-auto flex items-center gap-2">
           {!walletAddress ? (
             <button
               type="button"
               onClick={() => void handleConnectWallet()}
-              className="rounded-xl bg-white px-3 py-1.5 text-xs font-bold text-black shadow-[0_4px_14px_0_rgba(255,255,255,0.35)] transition-all hover:scale-105 hover:bg-zinc-100 md:px-4 md:py-2 md:text-sm"
+              className="rounded-lg bg-[#00FFA3] px-3 py-1.5 text-xs font-bold text-black shadow-[0_0_15px_rgba(0,255,163,0.25)] transition-all hover:scale-105 hover:bg-[#33ffb5] hover:shadow-[0_0_20px_rgba(0,255,163,0.4)] md:px-4 md:py-2 md:text-sm"
             >
               Connect wallet
             </button>
           ) : (
             <>
-              <div className="hidden items-center gap-1.5 rounded-xl border border-zinc-800 bg-zinc-900 px-3 py-1.5 md:flex">
-                <span className="text-xs text-zinc-400">Wallet:</span>
+              <div className="hidden items-center gap-1.5 rounded-lg border border-[#1a1f2e] bg-[#0B0F17] px-3 py-1.5 md:flex">
+                <span className="text-xs text-[#5a6078]">Wallet:</span>
                 <span className="text-sm font-bold text-white">{shortAddress(walletAddress)}</span>
               </div>
               <button
                 type="button"
                 onClick={() => void handleDisconnectWallet()}
-                className="rounded-xl border border-zinc-700 bg-zinc-900 px-3 py-1.5 text-xs font-bold text-zinc-200 transition-colors hover:bg-zinc-800 md:px-4 md:py-2 md:text-sm"
+                className="rounded-lg border border-[#1a1f2e] bg-[#0B0F17] px-3 py-1.5 text-xs font-bold text-[#8b92a8] transition-colors hover:bg-[#151a26] hover:text-white md:px-4 md:py-2 md:text-sm"
                 title="Disconnect wallet"
               >
                 Disconnect
@@ -248,10 +277,10 @@ export function FeedPage() {
               <button
                 type="button"
                 onClick={() => void handleDisconnectWallet()}
-                className="flex h-8 w-8 items-center justify-center rounded-full border-2 border-zinc-700 bg-gradient-to-br from-purple-500 to-pink-500 shadow-lg transition-all hover:scale-110 md:h-9 md:w-9"
+                className="flex h-8 w-8 items-center justify-center rounded-full border border-[#1a1f2e] bg-[#0B0F17] transition-all hover:scale-110 hover:border-[#00FFA3]/50 hover:shadow-[0_0_10px_rgba(0,255,163,0.2)] md:h-9 md:w-9"
                 title="Disconnect wallet"
               >
-                <User className="h-4 w-4 text-white md:h-5 md:w-5" />
+                <User className="h-4 w-4 text-[#8b92a8] md:h-5 md:w-5" />
               </button>
             </>
           )}
@@ -259,11 +288,11 @@ export function FeedPage() {
       </div>
 
       {notice ? (
-        <div className="shrink-0 border-b border-sky-500/30 bg-sky-500/10 px-4 py-2 text-sm text-sky-100">
+        <div className="shrink-0 border-b border-[#00d4ff]/30 bg-[#00d4ff]/10 px-4 py-2 text-sm text-[#00d4ff]">
           <span>{notice}</span>
           <button
             type="button"
-            className="ml-2 font-semibold text-sky-300 underline hover:text-white"
+            className="ml-2 font-semibold text-[#00d4ff] underline hover:text-white"
             onClick={() => setNotice(null)}
           >
             Dismiss
@@ -272,35 +301,133 @@ export function FeedPage() {
       ) : null}
 
       {error ? (
-        <div className="shrink-0 border-b border-amber-500/30 bg-amber-500/10 px-4 py-2 text-sm text-amber-200">
+        <div className="shrink-0 border-b border-[#f59e0b]/30 bg-[#f59e0b]/10 px-4 py-2 text-sm text-[#f59e0b]">
           <span>{error}</span>
           {" · "}
           <button type="button" className="font-bold underline" onClick={() => void loadFeed(filter)}>
             Retry
           </button>
-          <span className="ml-2 text-amber-200/70">(Is the API running? Try </span>
+          <span className="ml-2 text-[#f59e0b]/70">(Is the API running? Try </span>
           <code className="text-xs">npm run dev:server</code>
-          <span className="text-amber-200/70">)</span>
+          <span className="text-[#f59e0b]/70">)</span>
         </div>
       ) : null}
 
-      <div className="min-h-0 flex-1 overflow-y-auto px-3 py-4 md:px-6 md:py-6">
-        {loading ? (
-          <p className="text-center text-sm text-zinc-500">Loading feed…</p>
-        ) : tweets.length === 0 && !error ? (
-          <div className="mx-auto max-w-md rounded-2xl border border-zinc-800 bg-zinc-900/50 px-6 py-8 text-center">
-            <p className="text-sm text-zinc-400">No posts match this filter.</p>
+      {/* Main content: fixed-height left aside + scrollable right column */}
+      <div className="flex-1 min-h-0 flex gap-4 p-4">
+        {/* LEFT: Market Terminal — fills the viewport height beneath the top bar */}
+        <aside className="hidden md:flex md:flex-col w-[33%] lg:w-[25%] shrink-0 h-full min-h-0">
+          <MarketTerminal
+            tweets={visibleTweets}
+            narrative={selectedNarrative}
+          />
+        </aside>
+
+        {/* RIGHT: Signal Feed (the only scrollable area) */}
+        <div className="flex-1 min-w-0 overflow-y-auto">
+          <div className="flex flex-col gap-4">
+            {/* Futuristic Header Card */}
+            <div className="rounded-xl border border-[#1a1f2e] bg-[#0B0F17]/80 backdrop-blur-sm p-5 relative overflow-hidden">
+              {/* Subtle glow */}
+              <div className="absolute top-0 right-0 w-48 h-48 bg-[#00FFA3]/5 rounded-full blur-3xl pointer-events-none" />
+              <div className="absolute bottom-0 left-0 w-32 h-32 bg-[#00d4ff]/5 rounded-full blur-3xl pointer-events-none" />
+
+              <div className="relative flex flex-col md:flex-row md:items-start md:justify-between gap-4">
+                <div className="flex-1">
+                  <div className="flex items-center gap-2 mb-2">
+                    <TrendingUp className="h-4 w-4 text-[#00FFA3]" />
+                    <span className="text-[10px] font-bold uppercase tracking-widest text-[#00FFA3]">Market Feed</span>
+                  </div>
+                  <h1 className="text-3xl md:text-5xl font-extrabold text-white mb-2 leading-tight">
+                    Turn tweets into tokens
+                  </h1>
+                  <p className="text-sm text-[#8b92a8] max-w-xl leading-relaxed">
+                    Spot narratives before they blow up. Every post here is a potential market — select a tweet and launch it as a tradable token on Bags in seconds.
+                  </p>
+
+                  {/* Filter pills */}
+                  <div className="flex flex-wrap gap-1.5 mt-4">
+                    {(
+                      [
+                        ["all", "All"],
+                        ["noTokens", "No tokens yet"],
+                      ] as const
+                    ).map(([key, label]) => {
+                      const isActive = filter === key;
+                      return (
+                        <button
+                          key={key}
+                          type="button"
+                          onClick={() => setFilter(key)}
+                          className={`rounded-lg px-3 py-1.5 text-xs font-bold transition-all ${
+                            isActive
+                              ? "bg-[#00FFA3]/15 text-[#00FFA3] border border-[#00FFA3]/40 shadow-[0_0_10px_rgba(0,255,163,0.1)]"
+                              : "bg-[#151a26] text-[#8b92a8] border border-[#1a1f2e] hover:border-[#242b3d] hover:text-white"
+                          }`}
+                        >
+                          {label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Stats Boxes */}
+                <div className="flex gap-3 shrink-0">
+                  <div className="rounded-lg border border-[#1a1f2e] bg-[#05070B]/60 p-3 min-w-[80px]">
+                    <div className="text-[10px] font-bold uppercase tracking-wider text-[#5a6078] mb-1">Tracked</div>
+                    <div className="text-xl font-bold text-white">{stats.tracked}</div>
+                    <div className="text-[10px] text-[#5a6078] mt-0.5">signals in view</div>
+                  </div>
+                  <div className="rounded-lg border border-[#1a1f2e] bg-[#05070B]/60 p-3 min-w-[80px]">
+                    <div className="text-[10px] font-bold uppercase tracking-wider text-[#5a6078] mb-1">Moving</div>
+                    <div className="text-xl font-bold text-[#00FFA3]">{stats.moving}</div>
+                    <div className="text-[10px] text-[#5a6078] mt-0.5">tokens active</div>
+                  </div>
+                  <div className="rounded-lg border border-[#1a1f2e] bg-[#05070B]/60 p-3 min-w-[80px]">
+                    <div className="text-[10px] font-bold uppercase tracking-wider text-[#5a6078] mb-1">Narratives</div>
+                    <div className="text-xl font-bold text-white">{stats.venues}</div>
+                    <div className="text-[10px] text-[#5a6078] mt-0.5">categories</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Tweets */}
+            <div className="flex flex-col">
+              {loading ? (
+                <>
+                  <TweetCardSkeleton />
+                  <TweetCardSkeleton />
+                  <TweetCardSkeleton />
+                </>
+              ) : visibleTweets.length === 0 && !error ? (
+                <div className="mx-auto mt-8 max-w-md rounded-xl border border-[#1a1f2e] bg-[#0B0F17]/60 px-6 py-10 text-center">
+                  <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-[#151a26]">
+                    <Inbox className="h-6 w-6 text-[#5a6078]" />
+                  </div>
+                  <p className="text-base font-bold text-white">No posts here yet</p>
+                  <p className="mt-1 text-sm text-[#8b92a8]">
+                    {tweets.length === 0
+                      ? "New posts from tracked accounts will appear here automatically."
+                      : "Try a different filter to see more posts."}
+                  </p>
+                </div>
+              ) : (
+                <div className="space-y-0">
+                  {visibleTweets.map((tweet, index) => (
+                    <TweetCard
+                      key={tweet.tweetId ?? `${tweet.handle}-${tweet.time}-${index}`}
+                      {...tweet}
+                      onSelect={() => setSelectedNarrative(tweet.narrative)}
+                      isSelected={selectedNarrative === tweet.narrative}
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
-        ) : (
-          tweets.map((tweet, index) => (
-            <TweetCard
-              key={`${tweet.handle}-${tweet.time}`}
-              {...tweet}
-              initiallyExpanded={index === 0}
-              /* Tokenize button now routes to /tokenize page (no modal). */
-            />
-          ))
-        )}
+        </div>
       </div>
     </div>
   );

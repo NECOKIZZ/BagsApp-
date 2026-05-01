@@ -84,12 +84,59 @@ type NormalizedIncomingTweet = {
   id: string;
   handle: string;
   content: string;
+  imageUrl: string | null;
   likes: number;
   retweets: number;
   replies: number;
   postedAt: string;
   kind: "tweet" | "repost" | "quote" | "comment";
 };
+
+const COMMENT_MENTION_PREFIX_RE = /^@[a-z0-9_]{1,15}\b/i;
+
+function startsWithCommentTag(text: string): boolean {
+  const trimmed = text.trim();
+  return COMMENT_MENTION_PREFIX_RE.test(trimmed);
+}
+
+function extractTweetImageUrl(rawTweet: Record<string, unknown>): string | null {
+  const candidates: unknown[] = [];
+  const pushMediaUrls = (mediaList: unknown): void => {
+    if (!Array.isArray(mediaList)) return;
+    for (const item of mediaList) {
+      const media = item as Record<string, unknown>;
+      const videoInfo = media.video_info as Record<string, unknown> | undefined;
+      const variants = Array.isArray(videoInfo?.variants) ? (videoInfo?.variants as unknown[]) : [];
+      for (const variant of variants) {
+        const v = variant as Record<string, unknown>;
+        const vUrl = String(v.url ?? "").trim();
+        if (/^https?:\/\//i.test(vUrl) && /\.mp4(\?|$)/i.test(vUrl)) {
+          candidates.push(vUrl);
+        }
+      }
+      candidates.push(media.media_url_https, media.media_url, media.url, media.preview_image_url);
+    }
+  };
+
+  pushMediaUrls(rawTweet.media);
+  pushMediaUrls((rawTweet.extended_entities as Record<string, unknown> | undefined)?.media);
+  pushMediaUrls((rawTweet.entities as Record<string, unknown> | undefined)?.media);
+  pushMediaUrls((rawTweet.includes as Record<string, unknown> | undefined)?.media);
+
+  const direct = [
+    rawTweet.image_url,
+    rawTweet.imageUrl,
+    rawTweet.photo,
+    rawTweet.photo_url,
+    rawTweet.thumbnail,
+    rawTweet.thumbnail_url,
+  ];
+  for (const value of [...candidates, ...direct]) {
+    const url = String(value ?? "").trim();
+    if (url.startsWith("http://") || url.startsWith("https://")) return url;
+  }
+  return null;
+}
 
 function normalizeTwitterapiTweet(rawTweet: unknown): NormalizedIncomingTweet | null {
   const t = (rawTweet ?? {}) as Record<string, unknown>;
@@ -122,14 +169,23 @@ function normalizeTwitterapiTweet(rawTweet: unknown): NormalizedIncomingTweet | 
     hasRef("replied_to") ||
     Boolean(t.is_reply);
 
-  const kind: NormalizedIncomingTweet["kind"] = isRepost ? "repost" : isQuote ? "quote" : isComment ? "comment" : "tweet";
   const baseText = String(t.text ?? t.full_text ?? t.note_tweet_text ?? "").trim();
+  const taggedComment = startsWithCommentTag(baseText);
+  const kind: NormalizedIncomingTweet["kind"] = isRepost
+    ? "repost"
+    : isQuote
+      ? "quote"
+      : isComment || taggedComment
+        ? "comment"
+        : "tweet";
   const content = (kind === "tweet" ? baseText : `[${kind}] ${baseText}`).trim();
+  const imageUrl = extractTweetImageUrl(t);
 
   return {
     id,
     handle,
     content,
+    imageUrl,
     likes: Number(t.like_count ?? t.favorite_count ?? t.likes ?? 0),
     retweets: Number(t.retweet_count ?? t.retweets ?? 0),
     replies: Number(t.reply_count ?? t.replies ?? 0),
@@ -370,6 +426,24 @@ app.get("/api/health/bags", async (_req, res) => {
   });
 });
 
+// ── USD formatting helpers ───────────────────────────────────
+function formatUsdCompact(value: unknown): string {
+  const n = typeof value === "string" ? Number(value) : (value as number | null | undefined);
+  if (n == null || !Number.isFinite(n) || n <= 0) return "$0";
+  if (n >= 1_000_000_000) return `$${(n / 1_000_000_000).toFixed(2)}B`;
+  if (n >= 1_000_000) return `$${(n / 1_000_000).toFixed(2)}M`;
+  if (n >= 1_000) return `$${(n / 1_000).toFixed(1)}K`;
+  return `$${n.toFixed(0)}`;
+}
+
+function formatUsdPrice(value: unknown): string {
+  const n = typeof value === "string" ? Number(value) : (value as number | null | undefined);
+  if (n == null || !Number.isFinite(n) || n <= 0) return "$0";
+  if (n >= 1) return `$${n.toFixed(2)}`;
+  if (n >= 0.01) return `$${n.toFixed(4)}`;
+  return `$${n.toFixed(8).replace(/0+$/, "").replace(/\.$/, "")}`;
+}
+
 // ── Feed ─────────────────────────────────────────────────────
 app.get("/api/feed", async (req, res) => {
   try {
@@ -387,16 +461,7 @@ app.get("/api/feed", async (req, res) => {
           follower_count,
           score
         ),
-        narrative_tokens (
-          id,
-          token_name,
-          token_ticker,
-          token_mint,
-          current_mcap,
-          total_volume,
-          launched_at,
-          launched_here
-        )
+        narrative_tokens (*)
       `)
       .order("posted_at", { ascending: false })
       .limit(50);
@@ -412,6 +477,7 @@ app.get("/api/feed", async (req, res) => {
       const creator = row.creators ?? {};
       const tokens = Array.isArray(row.narrative_tokens) ? row.narrative_tokens : [];
       const lowerContent = String(row.content ?? "").toLowerCase();
+      const plainText = String(row.content ?? "").replace(/^\[(tweet|repost|quote|comment)\]\s*/i, "");
       const typeKeyword =
         lowerContent.startsWith("[repost]")
           ? "repost"
@@ -419,7 +485,9 @@ app.get("/api/feed", async (req, res) => {
             ? "quote"
             : lowerContent.startsWith("[comment]")
               ? "comment"
-              : "tweet";
+              : startsWithCommentTag(plainText)
+                ? "comment"
+                : "tweet";
       return {
         tweet_id: row.tweet_id ?? row.id ?? null,
         avatar: String((creator.display_name ?? creator.handle ?? "NA")).slice(0, 2).toUpperCase(),
@@ -439,9 +507,12 @@ app.get("/api/feed", async (req, res) => {
           icon: String(t.token_ticker ?? "TK").slice(0, 2).toUpperCase(),
           name: t.token_name ?? "UNKNOWN",
           match: Number(t.match_score ?? 80),
-          marketCap: t.current_mcap ? `$${t.current_mcap}` : "$0",
+          marketCap: formatUsdCompact(t.current_mcap),
+          volume: formatUsdCompact(t.total_volume),
+          price: formatUsdPrice(t.current_price),
           returns: String(t.returns ?? "0%"),
           score: Number(t.score ?? 50),
+          mint: t.token_mint ?? null,
         })),
       };
     });
@@ -456,6 +527,87 @@ app.get("/api/feed", async (req, res) => {
   } catch (err) {
     console.error("Feed error:", err);
     res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+app.get("/api/token/:mint/metrics", async (req, res) => {
+  try {
+    const mint = String(req.params.mint ?? "").trim();
+    if (!mint) {
+      res.status(400).json({ error: "mint is required" });
+      return;
+    }
+
+    const out: {
+      mint: string;
+      marketCapUsd: number | null;
+      priceUsd: number | null;
+      volume24hUsd: number | null;
+      liquidityUsd: number | null;
+      holders: number | null;
+      score: number | null;
+    } = {
+      mint,
+      marketCapUsd: null,
+      priceUsd: null,
+      volume24hUsd: null,
+      liquidityUsd: null,
+      holders: null,
+      score: null,
+    };
+
+    const { data: row } = await supabase
+      .from("narrative_tokens")
+      .select("current_mcap,current_price,total_volume,score")
+      .eq("token_mint", mint)
+      .order("updated_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (row) {
+      out.marketCapUsd = pickNum((row as Record<string, unknown>).current_mcap);
+      out.priceUsd = pickNum((row as Record<string, unknown>).current_price);
+      out.volume24hUsd = pickNum((row as Record<string, unknown>).total_volume);
+      out.score = pickNum((row as Record<string, unknown>).score);
+    }
+
+    if (bagsConfigured()) {
+      try {
+        const pool = await bagsGetPoolByMint(mint);
+        const p = (pool ?? {}) as Record<string, unknown>;
+        const inner =
+          (p.data as Record<string, unknown> | undefined) ??
+          (p.pool as Record<string, unknown> | undefined) ??
+          (p.response as Record<string, unknown> | undefined) ??
+          p;
+
+        const parsed = parseBagsPoolStats(pool);
+        out.marketCapUsd = out.marketCapUsd ?? parsed.marketCapUsd;
+        out.priceUsd = out.priceUsd ?? parsed.priceUsd;
+        out.volume24hUsd = out.volume24hUsd ?? parsed.volume24hUsd;
+        out.liquidityUsd = pickNum(
+          inner.liquidityUsd,
+          inner.liquidity_usd,
+          inner.liquidity,
+          inner.poolLiquidityUsd,
+          inner.tvlUsd,
+          inner.tvl,
+        );
+        out.holders = pickNum(
+          inner.holderCount,
+          inner.holders,
+          inner.uniqueHolders,
+          inner.holder_count,
+        );
+      } catch (e) {
+        console.warn(`[token-metrics] bags lookup failed for ${mint}:`, e);
+      }
+    }
+
+    res.json(out);
+  } catch (err) {
+    console.error("[token-metrics] error:", err);
+    res.status(500).json({ error: "Failed to fetch token metrics" });
   }
 });
 
@@ -980,87 +1132,6 @@ app.post("/api/admin/twitterapi/sync-monitors", async (_req, res) => {
   }
 });
 
-// ── Webhook (Apify → new tweets) ─────────────────────────────
-/**
- * Pull tweets out of an Apify webhook body.
- * Apify's default webhook body looks like:
- *   { eventType, resource: { defaultDatasetId, ... }, ... }
- * We also accept inline `items` arrays for tests/curl.
- */
-async function extractApifyTweets(body: unknown): Promise<unknown[]> {
-  if (Array.isArray(body)) return body;
-  const b = body as { items?: unknown[]; resource?: { defaultDatasetId?: string } };
-  if (Array.isArray(b?.items)) return b.items;
-  const datasetId = b?.resource?.defaultDatasetId;
-  if (datasetId) {
-    const apifyToken = process.env.APIFY_TOKEN?.trim();
-    const url = `https://api.apify.com/v2/datasets/${datasetId}/items?clean=true&format=json${
-      apifyToken ? `&token=${encodeURIComponent(apifyToken)}` : ""
-    }`;
-    console.log(`[apify-webhook] fetching dataset ${datasetId}`);
-    const r = await fetch(url);
-    if (!r.ok) {
-      console.error(`[apify-webhook] dataset fetch failed: ${r.status} ${await r.text().catch(() => "")}`);
-      return [];
-    }
-    const data = (await r.json()) as unknown[];
-    return Array.isArray(data) ? data : [];
-  }
-  return [];
-}
-
-app.post("/api/webhooks/apify", async (req, res) => {
-  try {
-    const tweets = await extractApifyTweets(req.body);
-    console.log(`[apify-webhook] received ${tweets.length} tweet(s)`);
-
-    let inserted = 0;
-    let skipped = 0;
-    for (const tweet of tweets as Array<Record<string, unknown> & { author?: { userName?: string } }>) {
-      const handle = tweet?.author?.userName?.toLowerCase();
-      if (!handle) continue;
-
-      // Only process tracked creators
-      const { data: creator } = await supabase
-        .from("creators")
-        .select("handle")
-        .eq("handle", handle)
-        .single();
-
-      if (!creator) {
-        skipped++;
-        continue;
-      }
-
-      const t = tweet as Record<string, unknown>;
-      const { error } = await supabase.from("tweets").upsert(
-        {
-          tweet_id: String(t.id ?? ""),
-          creator_handle: creator.handle,
-          content: String(t.text ?? t.fullText ?? ""),
-          likes: Number(t.likeCount ?? 0),
-          retweets: Number(t.retweetCount ?? 0),
-          replies: Number(t.replyCount ?? 0),
-          posted_at: String(t.createdAt ?? new Date().toISOString()),
-        },
-        { onConflict: "tweet_id" },
-      );
-
-      if (error) {
-        console.error("Tweet upsert error:", error);
-      } else {
-        inserted++;
-      }
-    }
-
-    console.log(`[apify-webhook] inserted=${inserted} skipped=${skipped}`);
-    res.json({ success: true, inserted, skipped, total: tweets.length });
-  } catch (err) {
-    console.error("Webhook error:", err);
-    res.status(500).json({ error: "Webhook processing failed" });
-  }
-});
-
 // ── Webhook (twitterapi.io → real-time tweets) ───────────────
 /**
  * twitterapi.io pushes a payload like:
@@ -1124,6 +1195,7 @@ app.post("/api/webhooks/twitterapi", async (req, res) => {
           tweet_id: tweet.id,
           creator_handle: creator.handle,
           content: tweet.content,
+          image_url: tweet.imageUrl,
           likes: tweet.likes,
           retweets: tweet.retweets,
           replies: tweet.replies,
@@ -1235,6 +1307,118 @@ async function refreshTweetMetricsOnce(): Promise<void> {
   }
 }
 
+async function backfillMissingTweetImagesOnce(opts?: { limit?: number; maxAgeHours?: number }): Promise<{
+  scanned: number;
+  fetched: number;
+  updated: number;
+}> {
+  const apiKey = process.env.TWITTERAPI_IO_KEY?.trim();
+  if (!apiKey) return { scanned: 0, fetched: 0, updated: 0 };
+
+  const limit = Math.max(1, Math.min(Number(opts?.limit ?? 200), 1000));
+  const maxAgeHours = Math.max(1, Number(opts?.maxAgeHours ?? 24 * 14));
+  const sinceIso = new Date(Date.now() - maxAgeHours * 3600 * 1000).toISOString();
+
+  const { data: rows, error } = await supabase
+    .from("tweets")
+    .select("tweet_id,content")
+    .is("image_url", null)
+    .gte("posted_at", sinceIso)
+    .order("posted_at", { ascending: false })
+    .limit(limit);
+
+  if (error) {
+    console.error("[image-backfill] supabase select error:", error);
+    return { scanned: 0, fetched: 0, updated: 0 };
+  }
+
+  const ids = (rows ?? [])
+    .map((r: { tweet_id?: string | null }) => String(r.tweet_id ?? "").trim())
+    .filter(Boolean);
+  if (ids.length === 0) return { scanned: 0, fetched: 0, updated: 0 };
+
+  const CHUNK_SIZE = 50;
+  let fetched = 0;
+  let updated = 0;
+
+  for (let i = 0; i < ids.length; i += CHUNK_SIZE) {
+    const chunk = ids.slice(i, i + CHUNK_SIZE);
+    const url = `https://api.twitterapi.io/twitter/tweets?tweet_ids=${encodeURIComponent(chunk.join(","))}`;
+    try {
+      const r = await fetch(url, { headers: { "x-api-key": apiKey } });
+      if (!r.ok) {
+        console.warn(`[image-backfill] api ${r.status}: ${await r.text().catch(() => "")}`);
+        continue;
+      }
+      const body = (await r.json()) as { tweets?: Array<Record<string, unknown>>; data?: Record<string, unknown> };
+      const list: Array<Record<string, unknown>> = Array.isArray(body?.tweets)
+        ? body.tweets
+        : Array.isArray((body?.data as { tweets?: unknown[] })?.tweets)
+          ? ((body.data as { tweets: Array<Record<string, unknown>> }).tweets)
+          : [];
+
+      fetched += list.length;
+      for (const t of list) {
+        const id = String(t.id ?? t.tweet_id ?? "").trim();
+        if (!id) continue;
+        const imageUrl = extractTweetImageUrl(t);
+        if (!imageUrl) continue;
+        const { error: upErr } = await supabase
+          .from("tweets")
+          .update({ image_url: imageUrl })
+          .eq("tweet_id", id)
+          .is("image_url", null);
+        if (upErr) {
+          console.warn(`[image-backfill] update fail id=${id}:`, upErr.message);
+        } else {
+          updated++;
+        }
+      }
+    } catch (err) {
+      console.error("[image-backfill] fetch error:", err);
+    }
+  }
+
+  console.log(`[image-backfill] scanned=${ids.length} fetched=${fetched} updated=${updated}`);
+  return { scanned: ids.length, fetched, updated };
+}
+
+async function backfillTweetKindsOnce(opts?: { limit?: number; maxAgeHours?: number }): Promise<{
+  scanned: number;
+  updated: number;
+}> {
+  const limit = Math.max(1, Math.min(Number(opts?.limit ?? 500), 5000));
+  const maxAgeHours = Math.max(1, Number(opts?.maxAgeHours ?? 24 * 30));
+  const sinceIso = new Date(Date.now() - maxAgeHours * 3600 * 1000).toISOString();
+
+  const { data: rows, error } = await supabase
+    .from("tweets")
+    .select("tweet_id,content")
+    .gte("posted_at", sinceIso)
+    .order("posted_at", { ascending: false })
+    .limit(limit);
+  if (error) {
+    console.error("[kind-backfill] supabase select error:", error);
+    return { scanned: 0, updated: 0 };
+  }
+
+  const items = (rows ?? []) as Array<{ tweet_id?: string | null; content?: string | null }>;
+  let updated = 0;
+  for (const row of items) {
+    const id = String(row.tweet_id ?? "").trim();
+    if (!id) continue;
+    const content = String(row.content ?? "");
+    const lower = content.toLowerCase().trim();
+    const hasPrefix = /^\[(tweet|repost|quote|comment)\]\s*/i.test(content);
+    if (hasPrefix || !startsWithCommentTag(content)) continue;
+    const patched = `[comment] ${content}`.trim();
+    const { error: upErr } = await supabase.from("tweets").update({ content: patched }).eq("tweet_id", id);
+    if (!upErr) updated++;
+  }
+  console.log(`[kind-backfill] scanned=${items.length} updated=${updated}`);
+  return { scanned: items.length, updated };
+}
+
 function startMetricsRefresher(): void {
   if (!process.env.TWITTERAPI_IO_KEY?.trim()) {
     console.log("[metrics-refresh] disabled (TWITTERAPI_IO_KEY missing)");
@@ -1253,6 +1437,20 @@ function startMetricsRefresher(): void {
 app.post("/api/admin/twitterapi/refresh-metrics", async (_req, res) => {
   await refreshTweetMetricsOnce();
   res.json({ ok: true });
+});
+
+app.post("/api/admin/twitterapi/backfill-images", async (req, res) => {
+  const limit = Number(req.body?.limit ?? 200);
+  const maxAgeHours = Number(req.body?.maxAgeHours ?? 24 * 14);
+  const result = await backfillMissingTweetImagesOnce({ limit, maxAgeHours });
+  res.json({ ok: true, ...result });
+});
+
+app.post("/api/admin/twitterapi/backfill-kinds", async (req, res) => {
+  const limit = Number(req.body?.limit ?? 500);
+  const maxAgeHours = Number(req.body?.maxAgeHours ?? 24 * 30);
+  const result = await backfillTweetKindsOnce({ limit, maxAgeHours });
+  res.json({ ok: true, ...result });
 });
 
 // ── Tweet retention cleanup ──────────────────────────────────
@@ -1287,6 +1485,133 @@ app.post("/api/admin/cleanup-tweets", async (_req, res) => {
   res.json({ ok: true });
 });
 
+// ── Bags token stats refresher ───────────────────────────────
+/**
+ * Pulls live market data (mcap, price, volume) from Bags for every
+ * narrative_tokens row that has a token_mint, and writes back to Supabase.
+ *
+ * Bags' pool response shape is undocumented in the SDK, so we extract values
+ * defensively from common candidate paths/keys.
+ */
+type BagsPoolStats = {
+  marketCapUsd: number | null;
+  priceUsd: number | null;
+  volume24hUsd: number | null;
+};
+
+function pickNum(...vals: unknown[]): number | null {
+  for (const v of vals) {
+    if (v == null) continue;
+    const n = typeof v === "string" ? Number(v) : (v as number);
+    if (typeof n === "number" && Number.isFinite(n)) return n;
+  }
+  return null;
+}
+
+function parseBagsPoolStats(pool: unknown): BagsPoolStats {
+  if (!pool || typeof pool !== "object") {
+    return { marketCapUsd: null, priceUsd: null, volume24hUsd: null };
+  }
+  const p = pool as Record<string, unknown>;
+  // Bags often wraps the actual pool under .data, .pool, or .response
+  const inner =
+    (p.data as Record<string, unknown> | undefined) ??
+    (p.pool as Record<string, unknown> | undefined) ??
+    (p.response as Record<string, unknown> | undefined) ??
+    p;
+  const marketCapUsd = pickNum(
+    inner.marketCapUsd,
+    inner.mcapUsd,
+    inner.mcap,
+    inner.marketCap,
+    inner.market_cap,
+    inner.fdvUsd,
+    inner.fdv,
+  );
+  const priceUsd = pickNum(
+    inner.priceUsd,
+    inner.price_usd,
+    inner.price,
+    inner.tokenPriceUsd,
+    inner.lastPriceUsd,
+  );
+  const volume24hUsd = pickNum(
+    inner.volume24hUsd,
+    inner.volume_24h_usd,
+    inner.volumeUsd,
+    inner.volume,
+    inner.volume24h,
+    inner.totalVolumeUsd,
+    inner.total_volume,
+  );
+  return { marketCapUsd, priceUsd, volume24hUsd };
+}
+
+async function refreshBagsTokenStatsOnce(): Promise<void> {
+  if (!bagsConfigured()) return;
+  const limit = Number(process.env.BAGS_REFRESH_LIMIT ?? 50);
+  const { data, error } = await supabase
+    .from("narrative_tokens")
+    .select("id, token_mint")
+    .not("token_mint", "is", null)
+    .limit(limit);
+  if (error) {
+    console.error("[bags-refresh] select error:", error.message);
+    return;
+  }
+  const rows = (data ?? []) as Array<{ id: string; token_mint: string }>;
+  if (rows.length === 0) {
+    console.log("[bags-refresh] no tokens to refresh");
+    return;
+  }
+
+  let updated = 0;
+  for (const row of rows) {
+    try {
+      const pool = await bagsGetPoolByMint(row.token_mint);
+      const stats = parseBagsPoolStats(pool);
+      const patch: Record<string, unknown> = {};
+      if (stats.marketCapUsd != null) patch.current_mcap = stats.marketCapUsd;
+      if (stats.priceUsd != null) patch.current_price = stats.priceUsd;
+      if (stats.volume24hUsd != null) patch.total_volume = stats.volume24hUsd;
+      if (Object.keys(patch).length === 0) continue;
+      const { error: upErr } = await supabase
+        .from("narrative_tokens")
+        .update(patch)
+        .eq("id", row.id);
+      if (upErr) {
+        console.warn(`[bags-refresh] update fail id=${row.id}:`, upErr.message);
+      } else {
+        updated++;
+      }
+    } catch (e) {
+      console.warn(
+        `[bags-refresh] fetch fail mint=${row.token_mint}:`,
+        e instanceof Error ? e.message : String(e),
+      );
+    }
+  }
+  console.log(`[bags-refresh] refreshed=${updated}/${rows.length}`);
+}
+
+function startBagsRefresher(): void {
+  const intervalMs = Number(process.env.BAGS_REFRESH_INTERVAL_MS ?? 600_000); // 10 min
+  if (intervalMs <= 0) {
+    console.log("[bags-refresh] disabled (BAGS_REFRESH_INTERVAL_MS<=0)");
+    return;
+  }
+  console.log(`[bags-refresh] enabled, interval=${Math.round(intervalMs / 1000)}s`);
+  setTimeout(() => {
+    void refreshBagsTokenStatsOnce();
+    setInterval(() => void refreshBagsTokenStatsOnce(), intervalMs);
+  }, 30_000);
+}
+
+app.post("/api/admin/bags/refresh-tokens", async (_req, res) => {
+  await refreshBagsTokenStatsOnce();
+  res.json({ ok: true });
+});
+
 app.listen(PORT, () => {
   console.log(`API listening on http://localhost:${PORT}`);
   console.log(`[feed-api] Loaded .env from project root: ${ENV_PROJECT_ROOT}`);
@@ -1295,4 +1620,5 @@ app.listen(PORT, () => {
   );
   startMetricsRefresher();
   startCleanupJob();
+  startBagsRefresher();
 });

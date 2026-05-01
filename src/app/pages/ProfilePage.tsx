@@ -1,370 +1,673 @@
-import { Wallet, TrendingUp, TrendingDown, DollarSign, Activity, Star, Send, Copy, Settings } from "lucide-react";
-import { useNavigate } from "react-router";
-import { useState } from "react";
+import { Link, useNavigate } from "react-router";
+import { Loader2, User, Wallet } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  checkWalletSession,
+  requestWalletNonce,
+  verifyWalletSignature,
+  logoutWalletSession,
+} from "../../lib/api";
+import { getPhantom, hasAnySolanaWallet, shortAddress } from "../../lib/phantom";
+import { fetchJupiterTokenMap, getTokenMetaSync, shortMint, SOL_MINT, type TokenMeta } from "../../lib/jupiter";
 
+const SOLANA_RPC =
+  (import.meta.env.VITE_SOLANA_RPC as string | undefined)?.trim() ||
+  "https://api.mainnet-beta.solana.com";
+const SOLANA_DEVNET_RPC = "https://api.devnet.solana.com";
+const SOLANA_RPC_FALLBACKS = [
+  SOLANA_RPC,
+  "https://api.mainnet-beta.solana.com",
+  "https://solana-rpc.publicnode.com",
+  "https://rpc.ankr.com/solana",
+];
+// Jupiter API key is OPTIONAL. Without one, hit the free lite host. With one, hit pro.
+const JUPITER_API_KEY = (import.meta.env.VITE_JUPITER_API_KEY as string | undefined)?.trim() || "";
+const JUPITER_HOST = JUPITER_API_KEY ? "https://api.jup.ag" : "https://lite-api.jup.ag";
+const JUPITER_PRICE_API = `${JUPITER_HOST}/price/v2`;
+const JUPITER_PRICE_V3_API = `${JUPITER_HOST}/price/v3`;
 interface TokenHolding {
-  id: number;
-  icon: string;
+  mint: string;
   name: string;
-  ticker: string;
+  symbol: string;
   amount: number;
   value: number;
-  priceChange: number;
-  iconColor: string;
-  iconBg: string;
+  logo?: string;
+  decimals: number;
+}
+
+async function fetchSolBalanceAtRpc(address: string, rpcUrl: string): Promise<number> {
+  const r = await fetch(rpcUrl, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "getBalance",
+      params: [address, { commitment: "confirmed" }],
+    }),
+  });
+  if (!r.ok) {
+    throw new Error(`RPC getBalance HTTP ${r.status} (${rpcUrl})`);
+  }
+  const j = (await r.json()) as { result?: { value?: number }; error?: { message?: string } };
+  if (j.error) {
+    throw new Error(`${j.error.message ?? "RPC getBalance failed"} (${rpcUrl})`);
+  }
+  const lamports = Number(j.result?.value ?? 0);
+  if (!Number.isFinite(lamports)) {
+    throw new Error(`RPC getBalance returned invalid value (${rpcUrl})`);
+  }
+  return lamports / 1e9;
+}
+
+async function fetchSolBalance(address: string): Promise<{ balance: number; rpcUsed: string }> {
+  const errors: string[] = [];
+  const uniqueRpcs = [...new Set(SOLANA_RPC_FALLBACKS.filter(Boolean))];
+  for (const rpc of uniqueRpcs) {
+    try {
+      const balance = await fetchSolBalanceAtRpc(address, rpc);
+      return { balance, rpcUsed: rpc };
+    } catch (err) {
+      errors.push(err instanceof Error ? err.message : String(err));
+    }
+  }
+  throw new Error(errors.join(" | "));
+}
+
+async function fetchTokenAccounts(address: string) {
+  const r = await fetch(SOLANA_RPC, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "getTokenAccountsByOwner",
+      params: [address, { programId: "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA" }, { encoding: "jsonParsed" }],
+    }),
+  });
+  const j = await r.json();
+  return (j.result?.value ?? []) as Array<{
+    account: {
+      data: {
+        parsed: {
+          info: {
+            mint: string;
+            tokenAmount: { amount: string; decimals: number; uiAmount: number | null; uiAmountString: string };
+          };
+        };
+      };
+    };
+  }>;
+}
+
+function jupiterHeaders(): HeadersInit {
+  return JUPITER_API_KEY ? { "x-api-key": JUPITER_API_KEY } : {};
+}
+
+async function fetchJupiterPrices(mints: string[]): Promise<Record<string, number>> {
+  if (mints.length === 0) return {};
+  const batches: string[][] = [];
+  for (let i = 0; i < mints.length; i += 100) batches.push(mints.slice(i, i + 100));
+  const results: Record<string, number> = {};
+
+  const readV2 = (payload: unknown, mint: string): number | null => {
+    const root = payload as { data?: Record<string, { price?: number | string }> };
+    const raw = root?.data?.[mint]?.price;
+    const n = typeof raw === "number" ? raw : Number(raw);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  };
+
+  const readV3 = (payload: unknown, mint: string): number | null => {
+    const root = payload as Record<string, { usdPrice?: number | string }>;
+    const raw = root?.[mint]?.usdPrice;
+    const n = typeof raw === "number" ? raw : Number(raw);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  };
+
+  for (const batch of batches) {
+    const ids = batch.join(",");
+    try {
+      const v2Resp = await fetch(`${JUPITER_PRICE_API}?ids=${ids}`, { headers: jupiterHeaders() });
+      if (v2Resp.ok) {
+        const j = await v2Resp.json();
+        for (const mint of batch) {
+          const v = readV2(j, mint);
+          if (v != null) results[mint] = v;
+        }
+      } else {
+        console.warn(`[jupiter] price v2 HTTP ${v2Resp.status} for ${batch.length} mints`);
+      }
+
+      const unresolved = batch.filter((mint) => results[mint] == null);
+      if (unresolved.length > 0) {
+        const v3Ids = unresolved.join(",");
+        const v3Resp = await fetch(`${JUPITER_PRICE_V3_API}?ids=${v3Ids}`, { headers: jupiterHeaders() });
+        if (v3Resp.ok) {
+          const j3 = await v3Resp.json();
+          for (const mint of unresolved) {
+            const v = readV3(j3, mint);
+            if (v != null) results[mint] = v;
+          }
+        } else {
+          console.warn(`[jupiter] price v3 HTTP ${v3Resp.status} for ${unresolved.length} mints`);
+        }
+      }
+    } catch (e) {
+      console.warn("[jupiter] price fetch failed:", e);
+    }
+  }
+  return results;
 }
 
 export function ProfilePage() {
   const navigate = useNavigate();
   const [isCopied, setIsCopied] = useState(false);
+  const [walletAddress, setWalletAddress] = useState<string | null>(null);
+  const [authToken, setAuthToken] = useState<string | null>(null);
+  const [solBalance, setSolBalance] = useState<number | null>(null);
+  const [solPrice, setSolPrice] = useState<number>(0);
+  const [holdings, setHoldings] = useState<TokenHolding[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [balanceHint, setBalanceHint] = useState<string | null>(null);
+  const [activeRpc, setActiveRpc] = useState<string>(SOLANA_RPC);
+  const [tokenMetaMap, setTokenMetaMap] = useState<Map<string, TokenMeta>>(new Map());
 
-  // Mock token holdings data - sorted by value from highest to lowest
-  const [holdings] = useState<TokenHolding[]>([
-    {
-      id: 1,
-      icon: "🌊",
-      name: "RWASOLANA",
-      ticker: "RWAS",
-      amount: 1250000,
-      value: 4850.50,
-      priceChange: 840.5,
-      iconColor: "#3C3489",
-      iconBg: "#EEEDFE",
-    },
-    {
-      id: 2,
-      icon: "🚀",
-      name: "MOONSHOT",
-      ticker: "MOON",
-      amount: 500000,
-      value: 2340.75,
-      priceChange: 125.3,
-      iconColor: "#085041",
-      iconBg: "#E1F5EE",
-    },
-    {
-      id: 3,
-      icon: "💎",
-      name: "DIAMOND",
-      ticker: "DIAM",
-      amount: 750000,
-      value: 1890.25,
-      priceChange: -15.2,
-      iconColor: "#712B13",
-      iconBg: "#FAECE7",
-    },
-    {
-      id: 4,
-      icon: "🔥",
-      name: "HOTFIRE",
-      ticker: "FIRE",
-      amount: 320000,
-      value: 1250.00,
-      priceChange: 67.8,
-      iconColor: "#633806",
-      iconBg: "#FAEEDA",
-    },
-    {
-      id: 5,
-      icon: "⚡",
-      name: "LIGHTNING",
-      ticker: "BOLT",
-      amount: 180000,
-      value: 890.50,
-      priceChange: -8.4,
-      iconColor: "#72243E",
-      iconBg: "#FBEAF0",
-    },
-    {
-      id: 6,
-      icon: "🌟",
-      name: "STARLIGHT",
-      ticker: "STAR",
-      amount: 425000,
-      value: 675.30,
-      priceChange: 32.1,
-      iconColor: "#3C3489",
-      iconBg: "#EEEDFE",
-    },
-    {
-      id: 7,
-      icon: "🎯",
-      name: "BULLSEYE",
-      ticker: "BULL",
-      amount: 95000,
-      value: 412.80,
-      priceChange: -22.5,
-      iconColor: "#085041",
-      iconBg: "#E1F5EE",
-    },
-    {
-      id: 8,
-      icon: "🌈",
-      name: "RAINBOW",
-      ticker: "RAIN",
-      amount: 150000,
-      value: 285.60,
-      priceChange: 15.7,
-      iconColor: "#712B13",
-      iconBg: "#FAECE7",
-    },
-  ]);
+  // Restore wallet session
+  useEffect(() => {
+    const token = localStorage.getItem("walletAuthToken");
+    const address = localStorage.getItem("walletAddress");
+    if (token && address) {
+      void checkWalletSession(token)
+        .then((session) => {
+          if (session.ok && session.address === address) {
+            setAuthToken(token);
+            setWalletAddress(address);
+          } else {
+            localStorage.removeItem("walletAuthToken");
+            localStorage.removeItem("walletAddress");
+          }
+          setLoading(false);
+        })
+        .catch(() => {
+          localStorage.removeItem("walletAuthToken");
+          localStorage.removeItem("walletAddress");
+          setLoading(false);
+        });
+      return;
+    }
+    // No stored session — try silent reconnect via Phantom
+    const provider = getPhantom();
+    if (provider) {
+      provider
+        .connect({ onlyIfTrusted: true })
+        .then(({ publicKey }) => {
+          setWalletAddress(publicKey.toString());
+          setLoading(false);
+        })
+        .catch(() => setLoading(false));
+    } else {
+      setLoading(false);
+    }
+  }, []);
 
-  const totalValue = holdings.reduce((sum, holding) => sum + holding.value, 0);
+  // Fetch Jupiter token list once
+  useEffect(() => {
+    void fetchJupiterTokenMap().then((map) => setTokenMetaMap(new Map(map)));
+  }, []);
 
-  const handleCopyAddress = () => {
-    const address = '0x1234567890abcdef1234567890abcdef12345678';
-    
-    // Fallback method for copying text
-    const textArea = document.createElement('textarea');
-    textArea.value = address;
-    textArea.style.position = 'fixed';
-    textArea.style.left = '-999999px';
-    textArea.style.top = '-999999px';
-    document.body.appendChild(textArea);
-    textArea.focus();
-    textArea.select();
-    
+  // Fetch SOL balance + price
+  useEffect(() => {
+    if (!walletAddress) { setSolBalance(null); setBalanceHint(null); return; }
+    let cancelled = false;
+    (async () => {
+      try {
+        const [bal, prices] = await Promise.all([
+          fetchSolBalance(walletAddress),
+          fetchJupiterPrices([SOL_MINT]),
+        ]);
+        if (!cancelled) {
+          setSolBalance(bal.balance);
+          setActiveRpc(bal.rpcUsed);
+          setSolPrice(prices[SOL_MINT] ?? 0);
+          if (bal.balance > 0) {
+            setBalanceHint(null);
+            return;
+          }
+          try {
+            const devnetBal = await fetchSolBalanceAtRpc(walletAddress, SOLANA_DEVNET_RPC);
+            if (!cancelled && devnetBal > 0) {
+              setBalanceHint(
+                `This wallet has ${devnetBal.toFixed(4)} SOL on devnet. Portfolio is reading mainnet (${bal.rpcUsed}).`,
+              );
+            } else if (!cancelled) {
+              setBalanceHint(null);
+            }
+          } catch {
+            if (!cancelled) setBalanceHint(null);
+          }
+        }
+      } catch {
+        if (!cancelled) {
+          setSolBalance(null);
+          setBalanceHint("Could not read SOL balance from any RPC endpoint. This is usually an RPC/network block issue.");
+        }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [walletAddress, tokenMetaMap]);
+
+  // Fetch token accounts + prices — independent of token metadata so balances render even if Jupiter is down
+  useEffect(() => {
+    if (!walletAddress) {
+      setHoldings([]);
+      setLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setLoading(true);
+    (async () => {
+      try {
+        const accounts = await fetchTokenAccounts(walletAddress);
+        const raw = accounts
+          .map((a) => {
+            const info = a.account.data.parsed.info;
+            return {
+              mint: info.mint,
+              amount: info.tokenAmount.uiAmount ?? Number(info.tokenAmount.uiAmountString) ?? 0,
+              decimals: info.tokenAmount.decimals,
+            };
+          })
+          .filter((t) => t.amount > 0);
+        const mints = raw.map((t) => t.mint);
+        const prices = await fetchJupiterPrices(mints);
+        const data: TokenHolding[] = raw
+          .map((t) => {
+            const price = prices[t.mint] ?? 0;
+            const meta = getTokenMetaSync(t.mint, tokenMetaMap);
+            return {
+              mint: t.mint,
+              name: meta?.name ?? `Token ${shortMint(t.mint)}`,
+              symbol: meta?.symbol ?? t.mint.slice(0, 4),
+              amount: t.amount,
+              value: t.amount * price,
+              logo: meta?.logoURI,
+              decimals: t.decimals,
+            };
+          })
+          .sort((a, b) => b.value - a.value);
+        if (!cancelled) setHoldings(data);
+      } catch (e) {
+        console.warn("[portfolio] holdings fetch failed:", e);
+        if (!cancelled) setHoldings([]);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [walletAddress, tokenMetaMap]);
+
+  // Enrich holdings with Jupiter metadata when the map becomes available
+  useEffect(() => {
+    if (tokenMetaMap.size === 0) return;
+    setHoldings((prev) =>
+      prev.map((h) => {
+        const meta = tokenMetaMap.get(h.mint);
+        if (!meta) return h;
+        return {
+          ...h,
+          name: meta.name ?? h.name,
+          symbol: meta.symbol ?? h.symbol,
+          logo: meta.logoURI ?? h.logo,
+        };
+      }),
+    );
+  }, [tokenMetaMap]);
+
+  const totalValue = useMemo(() => {
+    const solVal = (solBalance ?? 0) * solPrice;
+    return solVal + holdings.reduce((sum, h) => sum + h.value, 0);
+  }, [solBalance, solPrice, holdings]);
+
+  const handleCopyAddress = useCallback(() => {
+    if (!walletAddress) return;
+    navigator.clipboard?.writeText(walletAddress);
+    setIsCopied(true);
+    setTimeout(() => setIsCopied(false), 2000);
+  }, [walletAddress, tokenMetaMap]);
+
+  const handleConnectWallet = async () => {
+    const provider = getPhantom();
+    if (!provider) {
+      alert(hasAnySolanaWallet() ? "Use Phantom wallet" : "Install Phantom wallet");
+      return;
+    }
     try {
-      document.execCommand('copy');
-      textArea.remove();
-      setIsCopied(true);
-      // Hide message after 2 seconds
-      setTimeout(() => setIsCopied(false), 2000);
-      console.log('Address copied to clipboard');
-    } catch (err) {
-      console.error('Failed to copy address:', err);
-      textArea.remove();
+      const { publicKey } = await provider.connect();
+      const address = publicKey.toString();
+      setWalletAddress(address);
+      localStorage.setItem("walletAddress", address);
+
+      if (!provider.signMessage) {
+        alert("This wallet does not support signMessage.");
+        return;
+      }
+      const { nonce, message } = await requestWalletNonce(address);
+      const encodedMessage = new TextEncoder().encode(message);
+      const signed = await provider.signMessage(encodedMessage, "utf8");
+      const signatureB64 = btoa(String.fromCharCode(...signed.signature));
+      const verified = await verifyWalletSignature({ address, nonce, signature: signatureB64 });
+      setAuthToken(verified.token);
+      localStorage.setItem("walletAuthToken", verified.token);
+      localStorage.setItem("walletAddress", verified.address);
+    } catch (e) {
+      console.error("[wallet] connect error:", e);
+      alert(e instanceof Error ? e.message : "Wallet connection failed.");
+    }
+  };
+
+  const handleDisconnectWallet = async () => {
+    const provider = getPhantom();
+    try {
+      if (authToken) await logoutWalletSession(authToken);
+      await provider?.disconnect();
+    } finally {
+      setAuthToken(null);
+      setWalletAddress(null);
+      setSolBalance(null);
+      setBalanceHint(null);
+      setHoldings([]);
+      localStorage.removeItem("walletAddress");
+      localStorage.removeItem("walletAuthToken");
     }
   };
 
   return (
-    <div className="flex flex-col h-full bg-black">
-      {/* Content */}
-      <div className="flex-1 overflow-y-auto px-3 md:px-5 py-4 md:py-6 relative">
-        {/* Copied Message */}
-        {isCopied && (
-          <div className="fixed top-20 left-1/2 transform -translate-x-1/2 z-50 animate-fade-in">
-            <div className="bg-black text-white px-4 py-2 rounded-xl shadow-lg border border-gray-700 flex items-center gap-2">
-              <Copy className="w-4 h-4" />
-              <span className="text-sm font-bold">Wallet address copied!</span>
-            </div>
+    <div className="relative flex h-full min-h-0 flex-col">
+      {/* Top Bar */}
+      <div className="flex shrink-0 items-center gap-3 border-b border-[#1a1f2e]/80 bg-[#05070B]/80 backdrop-blur-xl px-4 py-4 z-20">
+        {/* Desktop: centered absolute nav */}
+        <div className="absolute inset-x-0 hidden sm:flex justify-center pointer-events-none">
+          <div className="flex items-center gap-2 pointer-events-auto">
+            <Link
+              to="/"
+              className={`px-5 py-2 text-sm font-bold tracking-widest rounded-lg transition-all ${
+                location.pathname === "/"
+                  ? "bg-[#00FFA3] text-black shadow-[0_0_20px_rgba(0,255,163,0.35)] scale-105"
+                  : "bg-[#0B0F17] text-[#8b92a8] border border-[#1a1f2e] hover:border-[#242b3d] hover:text-white hover:shadow-[0_0_10px_rgba(255,255,255,0.05)]"
+              }`}
+            >
+              FEED
+            </Link>
+            <Link
+              to="/profile"
+              className={`px-5 py-2 text-sm font-bold tracking-widest rounded-lg transition-all ${
+                location.pathname === "/profile"
+                  ? "bg-[#00FFA3] text-black shadow-[0_0_20px_rgba(0,255,163,0.35)] scale-105"
+                  : "bg-[#0B0F17] text-[#8b92a8] border border-[#1a1f2e] hover:border-[#242b3d] hover:text-white hover:shadow-[0_0_10px_rgba(255,255,255,0.05)]"
+              }`}
+            >
+              PORTFOLIO
+            </Link>
           </div>
-        )}
-        
-        {/* Profile Card */}
-        <div className="border border-gray-200 rounded-2xl p-4 md:p-5 mb-4 shadow-lg bg-[#ebebeb]">
-          <div className="flex items-center gap-3 mb-4">
-            <img 
-              src="https://images.unsplash.com/photo-1672685667592-0392f458f46f?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixid=M3w3Nzg4Nzd8MHwxfHNlYXJjaHwxfHxwcm9mZXNzaW9uYWwlMjBtYW4lMjBwb3J0cmFpdCUyMGhlYWRzaG90fGVufDF8fHx8MTc3NTA3ODA2Nnww&ixlib=rb-4.1.0&q=80&w=1080&utm_source=figma&utm_medium=referral"
-              alt="Profile avatar"
-              className="w-12 h-12 md:w-14 md:h-14 rounded-full object-cover border-2 border-gray-300 shadow-lg"
-            />
-            <div className="flex-1 min-w-0">
-              <div className="text-sm md:text-base font-bold text-gray-900">
-                Alex Morgan
-              </div>
-              <div className="text-xs text-gray-500">
-                @alexmorgan
-              </div>
-            </div>
-            <div className="flex items-center gap-2">
-              {/* Settings Button */}
+        </div>
+
+        {/* Mobile: inline compact nav */}
+        <div className="flex sm:hidden items-center gap-1.5">
+          <Link
+            to="/"
+            className={`px-2 py-1 text-[10px] font-bold tracking-widest rounded-md transition-all ${
+              location.pathname === "/"
+                ? "bg-[#00FFA3] text-black shadow-[0_0_12px_rgba(0,255,163,0.35)] scale-105"
+                : "bg-[#0B0F17] text-[#8b92a8] border border-[#1a1f2e] hover:border-[#242b3d] hover:text-white"
+            }`}
+          >
+            FEED
+          </Link>
+          <Link
+            to="/profile"
+            className={`px-2 py-1 text-[10px] font-bold tracking-widest rounded-md transition-all ${
+              location.pathname === "/profile"
+                ? "bg-[#00FFA3] text-black shadow-[0_0_12px_rgba(0,255,163,0.35)] scale-105"
+                : "bg-[#0B0F17] text-[#8b92a8] border border-[#1a1f2e] hover:border-[#242b3d] hover:text-white"
+            }`}
+          >
+            PORTFOLIO
+          </Link>
+        </div>
+        <div className="flex-1" />
+        <div className="flex items-center gap-2">
+          {!walletAddress ? (
+            <button
+              type="button"
+              onClick={() => void handleConnectWallet()}
+              className="rounded-lg bg-[#00FFA3] px-3 py-1.5 text-xs font-bold text-black shadow-[0_0_15px_rgba(0,255,163,0.25)] transition-all hover:scale-105 hover:bg-[#33ffb5] hover:shadow-[0_0_20px_rgba(0,255,163,0.4)] md:px-4 md:py-2 md:text-sm"
+            >
+              Connect wallet
+            </button>
+          ) : (
+            <>
               <button
-                onClick={() => {/* Add settings functionality */}}
-                className="w-8 h-8 md:w-9 md:h-9 rounded-full bg-white border-2 border-gray-300 flex items-center justify-center hover:bg-gray-50 hover:border-gray-400 hover:scale-110 transition-all shadow-md"
-                title="Settings"
-              >
-                <Settings className="w-3.5 h-3.5 md:w-4 md:h-4 text-gray-700" />
-              </button>
-              
-              {/* Copy Wallet Address Button */}
-              <button
+                type="button"
                 onClick={handleCopyAddress}
-                className="w-8 h-8 md:w-9 md:h-9 rounded-full bg-white border-2 border-gray-300 flex items-center justify-center hover:bg-gray-50 hover:border-gray-400 hover:scale-110 transition-all shadow-md"
-                title="Copy wallet address"
+                title={isCopied ? "Copied!" : "Copy address"}
+                className="hidden items-center gap-1.5 rounded-lg border border-[#1a1f2e] bg-[#0B0F17] px-3 py-1.5 md:flex hover:border-[#242b3d] transition-colors"
               >
-                <Copy className="w-3.5 h-3.5 md:w-4 md:h-4 text-gray-700" />
+                <span className="text-xs text-[#5a6078]">Wallet:</span>
+                <span className="text-sm font-bold text-white">{shortAddress(walletAddress)}</span>
               </button>
-              
-              {/* Send Button */}
               <button
-                onClick={() => {/* Add send functionality */}}
-                className="w-8 h-8 md:w-9 md:h-9 rounded-full bg-black border-2 border-gray-200 flex items-center justify-center hover:bg-gray-800 hover:scale-110 transition-all shadow-lg"
-                title="Send"
+                type="button"
+                onClick={() => void handleDisconnectWallet()}
+                className="rounded-lg border border-[#1a1f2e] bg-[#0B0F17] px-3 py-1.5 text-xs font-bold text-[#8b92a8] transition-colors hover:bg-[#151a26] hover:text-white md:px-4 md:py-2 md:text-sm"
+                title="Disconnect wallet"
               >
-                <Send className="w-3.5 h-3.5 md:w-4 md:h-4 text-white" />
+                Disconnect
               </button>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-2 gap-3">
-            <div className="bg-gray-50 rounded-xl p-3 border border-gray-200">
-              <div className="text-xs text-gray-600 mb-1 font-medium">
-                Total Value
-              </div>
-              <div className="font-bold text-gray-900 text-[24px] md:text-[32px]">
-                ${totalValue.toFixed(2)}
-              </div>
-              <div className="text-xs font-bold text-green-600 mt-1">+12.5%</div>
-            </div>
-            <div className="bg-gray-50 rounded-xl p-3 border border-gray-200">
-              <div className="text-xs text-gray-600 mb-1 font-medium">
-                Tokens Held
-              </div>
-              <div className="font-bold text-gray-900 text-[24px] md:text-[32px]">
-                {holdings.length}
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* Stats Grid */}
-        <div className="grid grid-cols-2 gap-3 mb-4">
-          <div className="border border-gray-200 rounded-2xl p-3 md:p-4 shadow-lg bg-[#ffffff]">
-            <div className="flex items-center gap-2 mb-2 md:mb-3">
-              <Star className="w-3.5 h-3.5 md:w-4 md:h-4 text-gray-600" />
-              <span className="text-xs font-bold text-gray-800">
-                User Score
-              </span>
-            </div>
-            <div className="font-bold text-gray-900 text-[32px]">
-              87.5
-            </div>
-            <div className="text-xs text-green-600 font-medium">
-              Top 10%
-            </div>
-          </div>
-
-          <div className="bg-white border border-gray-200 rounded-2xl p-3 md:p-4 shadow-lg">
-            <div className="flex items-center gap-2 mb-2 md:mb-3">
-              <TrendingUp className="w-3.5 h-3.5 md:w-4 md:h-4 text-green-600" />
-              <span className="text-xs font-bold text-gray-800">
-                Best Performer
-              </span>
-            </div>
-            <div className="font-bold text-gray-900 mb-1 md:mb-2 truncate text-xl md:text-[32px]">
-              RWASOLANA
-            </div>
-            <div className="font-bold text-green-600 text-[14px] md:text-[16px]">
-              +840%
-            </div>
-          </div>
-
-          <div className="bg-white border border-gray-200 rounded-2xl p-3 md:p-4 shadow-lg">
-            <div className="flex items-center gap-2 mb-2 md:mb-3">
-              <DollarSign className="w-3.5 h-3.5 md:w-4 md:h-4 text-gray-600" />
-              <span className="text-xs font-bold text-gray-800">
-                Tokens Launched
-              </span>
-            </div>
-            <div className="font-bold text-gray-900 text-[32px]">
-              3
-            </div>
-          </div>
-
-          <div className="bg-white border border-gray-200 rounded-2xl p-3 md:p-4 shadow-lg">
-            <div className="flex items-center gap-2 mb-2 md:mb-3">
-              <Activity className="w-3.5 h-3.5 md:w-4 md:h-4 text-gray-600" />
-              <span className="text-xs font-bold text-gray-800">
-                Total Trades
-              </span>
-            </div>
-            <div className="font-bold text-gray-900 text-[32px]">
-              47
-            </div>
-          </div>
-        </div>
-
-        {/* Tokens Held Section */}
-        <div className="mb-4">
-          <h2 className="text-xl md:text-2xl font-bold text-white mb-4 px-1">
-            Your Tokens
-          </h2>
-          
-          {/* Holdings List */}
-          <div className="space-y-3 md:space-y-4">
-            {holdings.map((holding) => (
-              <div
-                key={holding.id}
-                className="relative"
+              <button
+                type="button"
+                onClick={() => void handleDisconnectWallet()}
+                className="flex h-8 w-8 items-center justify-center rounded-full border border-[#1a1f2e] bg-[#0B0F17] transition-all hover:scale-110 hover:border-[#00FFA3]/50 hover:shadow-[0_0_10px_rgba(0,255,163,0.2)] md:h-9 md:w-9"
+                title="Disconnect wallet"
               >
-                {/* Glow effect */}
-                <div className="absolute -inset-0.5 bg-gradient-to-r from-gray-600/20 via-gray-400/20 to-gray-600/20 rounded-2xl blur-sm"></div>
-                
-                {/* Card */}
-                <div className="relative bg-black border border-gray-700 rounded-2xl p-4 md:p-5 hover:border-gray-500 transition-all">
-                  <div className="flex items-center gap-3 md:gap-4 mb-4">
-                    {/* Token Icon */}
-                    <div
-                      className="w-12 h-12 md:w-14 md:h-14 rounded-full flex items-center justify-center text-lg md:text-xl font-medium flex-shrink-0"
-                      style={{
-                        backgroundColor: holding.iconBg,
-                        color: holding.iconColor,
-                      }}
-                    >
-                      {holding.icon}
-                    </div>
+                <User className="h-4 w-4 text-[#8b92a8] md:h-5 md:w-5" />
+              </button>
+            </>
+          )}
+        </div>
+      </div>
 
-                    {/* Token Info */}
-                    <div className="flex-1 min-w-0">
-                      <button 
-                        onClick={() => navigate(`/token/${holding.name.toLowerCase()}`)}
-                        className="text-base md:text-lg font-bold text-white mb-0.5 hover:text-blue-400 transition-colors text-left w-full"
-                      >
-                        {holding.name}
-                      </button>
-                      <div className="text-xs md:text-sm text-gray-400">
-                        {holding.ticker}
-                      </div>
-                    </div>
+      {isCopied && (
+        <div className="shrink-0 border-b border-[#00FFA3]/30 bg-[#00FFA3]/10 px-4 py-2 text-sm text-[#00FFA3]">
+          Wallet address copied!
+        </div>
+      )}
+      {balanceHint && (
+        <div className="shrink-0 border-b border-[#f59e0b]/30 bg-[#f59e0b]/10 px-4 py-2 text-sm text-[#f59e0b]">
+          {balanceHint}
+        </div>
+      )}
 
-                    {/* Price Change */}
-                    <div className="text-right">
-                      <div className={`flex items-center gap-1 text-sm md:text-base font-bold ${
-                        holding.priceChange >= 0 ? 'text-green-500' : 'text-red-500'
-                      }`}>
-                        {holding.priceChange >= 0 ? (
-                          <TrendingUp className="w-4 h-4" />
-                        ) : (
-                          <TrendingDown className="w-4 h-4" />
-                        )}
-                        {holding.priceChange >= 0 ? '+' : ''}{holding.priceChange}%
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Holdings Details */}
-                  <div className="grid grid-cols-2 gap-3 mb-4 px-2">
-                    <div>
-                      <div className="text-xs text-gray-500 mb-1">Amount</div>
-                      <div className="text-sm md:text-base font-medium text-white">
-                        {holding.amount.toLocaleString()}
-                      </div>
-                    </div>
-                    <div className="text-right">
-                      <div className="text-xs text-gray-500 mb-1">Value</div>
-                      <div className="text-sm md:text-base font-bold text-white">
-                        ${holding.value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Action Buttons */}
-                  <div className="flex gap-2 md:gap-3">
-                    <button className="flex-1 px-4 py-2.5 md:py-3 text-sm md:text-base font-bold bg-[#4ade80] text-white rounded-xl hover:bg-[#22c55e] transition-all shadow-[0_4px_14px_0_rgba(74,222,128,0.5)] hover:shadow-[0_6px_20px_rgba(74,222,128,0.7)] hover:scale-105 active:scale-95">
-                      Buy
-                    </button>
-                    <button className="flex-1 px-4 py-2.5 md:py-3 text-sm md:text-base font-bold bg-[#ef4444] text-white rounded-xl hover:bg-[#dc2626] transition-all shadow-[0_4px_14px_0_rgba(239,68,68,0.5)] hover:shadow-[0_6px_20px_rgba(239,68,68,0.7)] hover:scale-105 active:scale-95">
-                      Sell
-                    </button>
-                  </div>
+      {/* Content */}
+      <div className="flex-1 overflow-y-auto px-4 py-4">
+        <div className="max-w-3xl mx-auto space-y-4">
+          {/* Balance Card */}
+          <div className="rounded-xl border border-[#1a1f2e] bg-[#0B0F17]/80 backdrop-blur-sm p-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="text-[10px] font-bold uppercase tracking-widest text-[#5a6078] mb-1">Total Value</div>
+                <div className="text-3xl font-bold text-white tracking-tight">
+                  {walletAddress ? (
+                    loading && holdings.length === 0 ? (
+                      <span className="flex items-center gap-2 text-xl text-[#5a6078]">
+                        <Loader2 className="h-5 w-5 animate-spin" /> Loading…
+                      </span>
+                    ) : (
+                      `$${totalValue.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                    )
+                  ) : (
+                    <span className="text-xl text-[#5a6078]">—</span>
+                  )}
                 </div>
+                {walletAddress && solBalance !== null && (
+                  <div className="text-[11px] text-[#5a6078] mt-1">
+                    {solBalance.toFixed(4)} SOL @ ${solPrice.toLocaleString("en-US", { minimumFractionDigits: 2 })}
+                    <span className="ml-2 opacity-80">(RPC: {activeRpc})</span>
+                  </div>
+                )}
               </div>
-            ))}
+            </div>
+          </div>
+
+          {/* Stats Grid */}
+          <div className="grid grid-cols-2 gap-3">
+            {/* Tokens held */}
+            <div className="rounded-xl border border-[#1a1f2e] bg-[#0B0F17]/80 backdrop-blur-sm p-4">
+              <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-[#5a6078] mb-2">Tokens held</div>
+              <div className="font-mono text-3xl font-bold text-white tabular-nums tracking-tight">
+                {walletAddress
+                  ? holdings.length + (solBalance && solBalance > 0 ? 1 : 0)
+                  : "—"}
+              </div>
+            </div>
+
+            {/* Score */}
+            <div className="rounded-xl border border-[#1a1f2e] bg-[#0B0F17]/80 backdrop-blur-sm p-4">
+              <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-[#5a6078] mb-2">Score</div>
+              <div className="font-mono text-3xl font-bold text-[#00FFA3] tabular-nums tracking-tight">
+                —<span className="text-[#5a6078]">/100</span>
+              </div>
+            </div>
+
+            {/* PNL */}
+            <div className="rounded-xl border border-[#1a1f2e] bg-[#0B0F17]/80 backdrop-blur-sm p-4">
+              <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-[#5a6078] mb-2">PNL</div>
+              <div className="font-mono text-3xl font-bold text-[#00FFA3] tabular-nums tracking-tight">
+                $0.00
+              </div>
+            </div>
+
+            {/* Tokens created */}
+            <div className="rounded-xl border border-[#1a1f2e] bg-[#0B0F17]/80 backdrop-blur-sm p-4">
+              <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-[#5a6078] mb-2">Tokens created</div>
+              <div className="font-mono text-3xl font-bold text-red-400 tabular-nums tracking-tight">
+                0
+              </div>
+            </div>
+          </div>
+
+          {/* Holdings Section */}
+          <div className="pt-2">
+            <h2 className="text-xs font-bold uppercase tracking-wider text-[#5a6078] mb-3">Your Tokens</h2>
+            {!walletAddress && (
+              <div className="rounded-xl border border-[#1a1f2e] bg-[#0B0F17]/80 p-6 text-center">
+                <Wallet className="h-8 w-8 text-[#5a6078] mx-auto mb-3" />
+                <p className="text-sm text-[#5a6078] mb-3">Connect your wallet to view portfolio</p>
+                <button
+                  onClick={handleConnectWallet}
+                  className="bg-[#00FFA3] hover:bg-[#33ffb5] text-black font-bold rounded-lg px-4 py-2 text-xs transition-colors"
+                >
+                  Connect Wallet
+                </button>
+              </div>
+            )}
+            {walletAddress && loading && holdings.length === 0 && (
+              <div className="flex items-center justify-center py-10">
+                <Loader2 className="h-6 w-6 text-[#00FFA3] animate-spin" />
+              </div>
+            )}
+            {walletAddress && !loading && holdings.length === 0 && (!solBalance || solBalance === 0) && (
+              <div className="rounded-xl border border-[#1a1f2e] bg-[#0B0F17]/80 p-6 text-center text-sm text-[#5a6078]">
+                No tokens found in this wallet.
+              </div>
+            )}
+            {walletAddress && (
+              <div className="space-y-2">
+                {/* SOL row */}
+                {solBalance !== null && solBalance > 0 && (
+                  <div key={SOL_MINT} className="rounded-lg border border-[#1a1f2e] bg-[#0B0F17]/80 p-2.5 hover:border-[#242b3d] transition-all">
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-8 h-8 rounded-full flex items-center justify-center text-sm flex-shrink-0 bg-[#1a1f2e]">
+                        {getTokenMetaSync(SOL_MINT, tokenMetaMap)?.logoURI ? (<img src={getTokenMetaSync(SOL_MINT, tokenMetaMap)?.logoURI} alt="SOL" className="w-6 h-6 rounded-full" />) : (<span className="text-xs">S</span>)}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            onClick={() => navigate(`/token/${SOL_MINT}`)}
+                            className="text-sm font-bold text-white hover:text-[#00FFA3] transition-colors truncate"
+                          >{getTokenMetaSync(SOL_MINT, tokenMetaMap)?.name ?? "Wrapped SOL"}</button>
+                          <span className="text-[10px] text-[#5a6078]">{getTokenMetaSync(SOL_MINT, tokenMetaMap)?.symbol ?? "SOL"}</span>
+                        </div>
+                        <div className="text-[11px] text-[#5a6078]">{solBalance.toFixed(4)}</div>
+                      </div>
+                      <div className="text-right mr-1">
+                        <div className="text-sm font-bold text-white">
+                          ${((solBalance ?? 0) * solPrice).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        </div>
+                      </div>
+                      <a
+                        role="button"
+                        href="https://jup.ag/swap/SOL-USDC"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="border border-[#00FFA3]/40 text-[#00FFA3] hover:bg-[#00FFA3] hover:text-black hover:shadow-[0_0_12px_rgba(0,255,163,0.3)] rounded-md px-2.5 py-1 text-[10px] transition-all"
+                      >
+                        Trade
+                      </a>
+                    </div>
+                  </div>
+                )}
+                {holdings.map((holding) => (
+                  <div key={holding.mint} className="rounded-lg border border-[#1a1f2e] bg-[#0B0F17]/80 p-2.5 hover:border-[#242b3d] transition-all">
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-8 h-8 rounded-full flex items-center justify-center text-sm flex-shrink-0 bg-[#1a1f2e]">
+                        {holding.logo ? (
+                          <img src={holding.logo} alt={holding.symbol} className="w-6 h-6 rounded-full" />
+                        ) : (
+                          <span className="text-xs">🪙</span>
+                        )}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            onClick={() => navigate(`/token/${holding.mint}`)}
+                            className="text-sm font-bold text-white hover:text-[#00FFA3] transition-colors truncate"
+                          >
+                            {holding.name}
+                          </button>
+                          <span className="text-[10px] text-[#5a6078]">{holding.symbol}</span>
+                        </div>
+                        <div className="text-[11px] text-[#5a6078]">
+                          {holding.amount.toLocaleString(undefined, { maximumFractionDigits: holding.decimals > 4 ? 2 : holding.decimals })}
+                        </div>
+                      </div>
+                      <div className="text-right mr-1">
+                        <div className="text-sm font-bold text-white">
+                          {holding.value >= 0.01
+                            ? `$${holding.value.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                            : "<$0.01"}
+                        </div>
+                      </div>
+                      <a
+                        role="button"
+                        href={`https://jup.ag/swap/SOL-${holding.mint}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="border border-[#00FFA3]/40 text-[#00FFA3] hover:bg-[#00FFA3] hover:text-black hover:shadow-[0_0_12px_rgba(0,255,163,0.3)] rounded-md px-2.5 py-1 text-[10px] transition-all"
+                      >
+                        Trade
+                      </a>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </div>
       </div>
     </div>
   );
 }
+
+
+
+

@@ -2,63 +2,63 @@
 
 :root {
   --font-size: 16px;
-  /* Figma feed (live narratives) — used by feed-figma.css + Layout shell */
-  --color-background-primary: #ffffff;
-  --color-background-secondary: #f6f6f8;
-  --color-background-tertiary: #ececef;
-  --color-border-primary: #d4d4d8;
-  --color-border-secondary: #c4c4ca;
-  --color-border-tertiary: #e8e8ec;
-  --color-text-primary: #18181b;
-  --color-text-secondary: #71717a;
-  --color-text-tertiary: #a1a1aa;
-  --color-text-info: #2563eb;
-  --color-text-success: #3b6d11;
-  --color-background-success: #eaf3de;
-  --color-border-success: #c5d9a8;
-  --color-text-warning: #854d0e;
-  --color-background-warning: #fef3c7;
-  --color-text-danger: #b91c1c;
+  /* Futuristic dark theme */
+  --color-background-primary: #05070B;
+  --color-background-secondary: #0B0F17;
+  --color-background-tertiary: #0E1420;
+  --color-border-primary: #1a1f2e;
+  --color-border-secondary: #242b3d;
+  --color-border-tertiary: #151a26;
+  --color-text-primary: #ffffff;
+  --color-text-secondary: #8b92a8;
+  --color-text-tertiary: #5a6078;
+  --color-text-info: #00d4ff;
+  --color-text-success: #00FFA3;
+  --color-background-success: rgba(0, 255, 163, 0.08);
+  --color-border-success: rgba(0, 255, 163, 0.25);
+  --color-text-warning: #f59e0b;
+  --color-background-warning: rgba(245, 158, 11, 0.08);
+  --color-text-danger: #ef4444;
   --font-sans: "Bricolage Grotesque", system-ui, sans-serif;
-  --border-radius-md: 6px;
-  --border-radius-lg: 10px;
-  --background: #ffffff;
-  --foreground: oklch(0.145 0 0);
-  --card: #ffffff;
-  --card-foreground: oklch(0.145 0 0);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.145 0 0);
-  --primary: #030213;
-  --primary-foreground: oklch(1 0 0);
-  --secondary: oklch(0.95 0.0058 264.53);
-  --secondary-foreground: #030213;
-  --muted: #ececf0;
-  --muted-foreground: #717182;
-  --accent: #e9ebef;
-  --accent-foreground: #030213;
-  --destructive: #d4183d;
+  --border-radius-md: 8px;
+  --border-radius-lg: 12px;
+  --background: #05070B;
+  --foreground: #ffffff;
+  --card: #0B0F17;
+  --card-foreground: #ffffff;
+  --popover: #0B0F17;
+  --popover-foreground: #ffffff;
+  --primary: #00FFA3;
+  --primary-foreground: #000000;
+  --secondary: #151a26;
+  --secondary-foreground: #ffffff;
+  --muted: #0E1420;
+  --muted-foreground: #5a6078;
+  --accent: #00FFA3;
+  --accent-foreground: #000000;
+  --destructive: #ef4444;
   --destructive-foreground: #ffffff;
-  --border: rgba(0, 0, 0, 0.1);
+  --border: #1a1f2e;
   --input: transparent;
-  --input-background: #f3f3f5;
-  --switch-background: #cbced4;
+  --input-background: #0E1420;
+  --switch-background: #1a1f2e;
   --font-weight-medium: 500;
   --font-weight-normal: 400;
-  --ring: oklch(0.708 0 0);
-  --chart-1: oklch(0.646 0.222 41.116);
-  --chart-2: oklch(0.6 0.118 184.704);
-  --chart-3: oklch(0.398 0.07 227.392);
-  --chart-4: oklch(0.828 0.189 84.429);
-  --chart-5: oklch(0.769 0.188 70.08);
-  --radius: 0.625rem;
-  --sidebar: oklch(0.985 0 0);
-  --sidebar-foreground: oklch(0.145 0 0);
-  --sidebar-primary: #030213;
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.97 0 0);
-  --sidebar-accent-foreground: oklch(0.205 0 0);
-  --sidebar-border: oklch(0.922 0 0);
-  --sidebar-ring: oklch(0.708 0 0);
+  --ring: #00FFA3;
+  --chart-1: #00FFA3;
+  --chart-2: #00d4ff;
+  --chart-3: #a855f7;
+  --chart-4: #f59e0b;
+  --chart-5: #ef4444;
+  --radius: 0.75rem;
+  --sidebar: #0B0F17;
+  --sidebar-foreground: #ffffff;
+  --sidebar-primary: #00FFA3;
+  --sidebar-primary-foreground: #000000;
+  --sidebar-accent: #151a26;
+  --sidebar-accent-foreground: #ffffff;
+  --sidebar-border: #1a1f2e;
+  --sidebar-ring: #00FFA3;
 }
 
 .dark {
@@ -99,6 +99,9 @@
 }
 
 @theme inline {
+  --font-sans: "Bricolage Grotesque", system-ui, sans-serif;
+  --font-display: "Space Grotesk", "Bricolage Grotesque", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "Cascadia Code", "Source Code Pro", Menlo, Consolas, monospace;
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --color-card: var(--card);
@@ -188,9 +191,14 @@
     line-height: 1.5;
   }
 
-  button {
-    font-size: var(--text-base);
-    font-weight: var(--font-weight-medium);
+  button,
+  a[role="button"],
+  .btn-font {
+    font-family: 'Space Grotesk', 'Bricolage Grotesque', system-ui, sans-serif;
+    font-size: var(--text-sm);
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
     line-height: 1.5;
   }
 
@@ -198,5 +206,27 @@
     font-size: var(--text-base);
     font-weight: var(--font-weight-normal);
     line-height: 1.5;
+  }
+
+  /* ── Custom scrollbar (dark theme) ── */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: #0B0F17;
+    border-radius: 3px;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: #1a1f2e;
+    border-radius: 3px;
+    transition: background 150ms ease;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: #242b3d;
+  }
+  html {
+    scrollbar-width: thin;
+    scrollbar-color: #1a1f2e #0B0F17;
   }
 }
