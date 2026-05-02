@@ -11,11 +11,37 @@ export interface LinkPreviewData {
 export function TweetLinkPreview({ preview }: { preview?: LinkPreviewData | null }) {
   if (!preview || !preview.url) return null;
 
+  const isTwitter = preview.url.includes('x.com') || preview.url.includes('twitter.com');
+  
   // If it's a twitter image, we might need to proxy it to avoid hotlink blocks
   const imageUrl = preview.image?.includes('pbs.twimg.com') 
     ? `https://unavatar.io/twitter/${new URL(preview.url).pathname.split('/')[1]}?fallback=${encodeURIComponent(preview.image)}`
     : preview.image;
 
+  if (isTwitter && preview.image) {
+    // RENDER NATIVE MEDIA STYLE (Clean, no card text)
+    return (
+      <div className="mt-3 rounded-2xl border border-[#1a1f2e] overflow-hidden bg-black/20 group cursor-pointer">
+        <a href={preview.url} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()}>
+          <div className="w-full relative aspect-video overflow-hidden">
+            <img
+              src={preview.image}
+              alt="Tweet media"
+              className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-105"
+              loading="lazy"
+              onError={(e) => {
+                if (e.currentTarget.src !== imageUrl && imageUrl) {
+                  e.currentTarget.src = imageUrl;
+                }
+              }}
+            />
+          </div>
+        </a>
+      </div>
+    );
+  }
+
+  // Fallback for non-twitter links (standard rich card)
   return (
     <a
       href={preview.url}
