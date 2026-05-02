@@ -1098,11 +1098,11 @@ app.post("/api/launches/:launchId/submit-tx", async (req, res) => {
         .eq("id", launchId);
 
       // Update narrative_tokens to mark as launched_here
-      if (row.token_mint) {
+      if (launch.token_mint) {
         await supabase
           .from("narrative_tokens")
           .update({ launched_here: true })
-          .eq("token_mint", row.token_mint);
+          .eq("token_mint", launch.token_mint);
       }
 
       res.json({
@@ -1290,7 +1290,10 @@ app.post("/api/webhooks/twitterapi", async (req, res) => {
       } else {
         inserted++;
         // Trigger Narrative Pipeline asynchronously (fire-and-forget)
-        runNarrativePipeline(tweet).catch((err) =>
+        runNarrativePipeline({
+          tweet_id: tweet.id,
+          content: tweet.content
+        }).catch((err) =>
           console.error(`[Pipeline] failed for tweet ${tweet.id}:`, err)
         );
       }
@@ -1536,6 +1539,31 @@ app.post("/api/admin/twitterapi/backfill-kinds", async (req, res) => {
   const maxAgeHours = Number(req.body?.maxAgeHours ?? 24 * 30);
   const result = await backfillTweetKindsOnce({ limit, maxAgeHours });
   res.json({ ok: true, ...result });
+});
+
+app.post("/api/admin/backfill-narratives", async (req, res) => {
+  const limit = Math.min(Number(req.body?.limit ?? 5), 20); // Cap at 20 to manage costs
+  const { data: tweets, error } = await supabase
+    .from("tweets")
+    .select("tweet_id, content")
+    .order("posted_at", { ascending: false })
+    .limit(limit);
+
+  if (error || !tweets) {
+    return res.status(500).json({ error: "Failed to fetch tweets for backfill" });
+  }
+
+  console.log(`[NarrativeBackfill] Starting for ${tweets.length} tweets...`);
+  
+  // Run in background (fire-and-forget)
+  for (const tweet of tweets) {
+    runNarrativePipeline({
+      tweet_id: String(tweet.tweet_id),
+      content: String(tweet.content)
+    }).catch(err => console.error(`[Backfill] Fail for ${tweet.tweet_id}:`, err));
+  }
+
+  res.json({ ok: true, scheduled: tweets.length, hint: "Check server logs for progress." });
 });
 
 // ── Tweet retention cleanup ──────────────────────────────────
