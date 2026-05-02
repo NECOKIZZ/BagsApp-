@@ -19,15 +19,15 @@ export function TweetLinkPreview({ preview }: { preview?: LinkPreviewData | null
     : preview.image;
 
   if (isTwitter && preview.image) {
-    // RENDER NATIVE MEDIA STYLE (Clean, no card text)
+    // RENDER NATIVE MEDIA STYLE (Minimalist, No Cropping)
     return (
-      <div className="mt-3 rounded-2xl border border-[#1a1f2e] overflow-hidden bg-black/20 group cursor-pointer">
+      <div className="mt-3 rounded-xl border border-[#1a1f2e] overflow-hidden bg-black/40 group cursor-pointer max-w-[400px]">
         <a href={preview.url} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()}>
-          <div className="w-full relative aspect-video overflow-hidden">
+          <div className="w-full relative flex items-center justify-center bg-[#05070a]">
             <img
               src={preview.image}
               alt="Tweet media"
-              className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-105"
+              className="max-w-full max-h-[300px] object-contain transition-opacity duration-500 hover:opacity-90"
               loading="lazy"
               onError={(e) => {
                 if (e.currentTarget.src !== imageUrl && imageUrl) {
