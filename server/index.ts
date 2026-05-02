@@ -574,6 +574,7 @@ app.get("/api/feed", async (req, res) => {
         views: String(row.views ?? 0),
         narrative: row.content ?? "",
         image: row.image_url ?? undefined,
+        link_preview: row.link_preview ?? null,
         tokens: tokens.map((t: any, i: number) => ({
           rank: i + 1,
           icon: String(t.token_ticker ?? "TK").slice(0, 2).toUpperCase(),

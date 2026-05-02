@@ -128,6 +128,11 @@ function renderTweetText(text: string, keywords: string[]): ReactNode[] {
       );
     }
 
+    const isTcoLink = segment.startsWith("https://t.co/");
+    if (isTcoLink) {
+      return null; // Hide raw shortened links
+    }
+
     const cleaned = segment.replace(/^[^A-Za-z0-9$#]+|[^A-Za-z0-9$#]+$/g, "");
     const normalized = cleaned.toLowerCase();
     const isKeyword = normalizedKeywords.includes(normalized);
