@@ -1,26 +1,43 @@
-import { useMemo } from "react";
+
+import { useState, useMemo, useEffect } from "react";
 import { TrendingUp } from "lucide-react";
 import type { TweetCardProps } from "./TweetCard";
+import { fetchTerminalData, type TerminalToken, type TerminalResponse } from "../../lib/api";
 
 interface MarketTerminalProps {
   tweets: TweetCardProps[];
   narrative?: string | null;
 }
 
-export function MarketTerminal({ tweets, narrative }: MarketTerminalProps) {
+type TerminalTab = "OLD" | "YOUNG" | "MY APP";
 
-  const tokens = useMemo(() => {
-    const map = new Map<string, NonNullable<TweetCardProps["tokens"]>[number]>();
-    for (const tweet of tweets) {
-      if (narrative && tweet.narrative !== narrative) continue;
-      for (const token of tweet.tokens ?? []) {
-        if (!map.has(token.name)) {
-          map.set(token.name, token);
-        }
+export function MarketTerminal({ tweets, narrative }: MarketTerminalProps) {
+  const [activeTab, setActiveTab] = useState<TerminalTab>("YOUNG");
+  const [data, setData] = useState<TerminalResponse | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const load = async () => {
+      try {
+        const res = await fetchTerminalData();
+        setData(res);
+      } catch (e) {
+        console.error("Failed to load terminal data", e);
+      } finally {
+        setLoading(false);
       }
-    }
-    return Array.from(map.values()).sort((a, b) => b.score - a.score).slice(0, 10);
-  }, [tweets, narrative]);
+    };
+    load();
+    const id = setInterval(load, 30_000); // Sync with feed refresh
+    return () => clearInterval(id);
+  }, []);
+
+  const activeTokens = useMemo(() => {
+    if (!data) return [];
+    if (activeTab === "OLD") return data.old ?? [];
+    if (activeTab === "YOUNG") return data.young ?? [];
+    return data.myApp ?? [];
+  }, [data, activeTab]);
 
   const getScoreColor = (score: number) => {
     if (score >= 80) return "text-[#00FFA3]";
@@ -57,26 +74,55 @@ export function MarketTerminal({ tweets, narrative }: MarketTerminalProps) {
         </div>
       </div>
 
+      {/* Tab Switcher */}
+      <div className="shrink-0 flex p-1.5 gap-1 bg-[#05070B]/40 border-b border-[#1a1f2e]">
+        {(["OLD", "YOUNG", "MY APP"] as const).map((tab) => (
+          <button
+            key={tab}
+            onClick={() => setActiveTab(tab)}
+            className={`flex-1 py-1.5 rounded-md text-[10px] font-bold transition-all ${
+              activeTab === tab
+                ? "bg-[#00FFA3]/10 text-[#00FFA3] border border-[#00FFA3]/20 shadow-[0_0_10px_rgba(0,255,163,0.1)]"
+                : "text-[#5a6078] hover:text-[#8b92a8] border border-transparent"
+            }`}
+          >
+            {tab}
+          </button>
+        ))}
+      </div>
+
       {/* Table Header */}
       <div className="shrink-0 flex items-center px-3 py-2 border-b border-[#1a1f2e]/60 bg-[#05070B]/50 text-[#5a6078] font-mono text-[10px] uppercase tracking-wider">
         <div className="w-20">Token</div>
         <div className="w-14">Score</div>
-        <div className="w-20 text-right">Mcap</div>
-        <div className="w-20 text-right hidden lg:block">Vol(24h)</div>
-        <div className="w-16 text-right">Ret</div>
+        {activeTab === "YOUNG" ? (
+          <>
+            <div className="w-16 text-right">Time</div>
+            <div className="w-16 text-right hidden md:block">Ret</div>
+          </>
+        ) : (
+          <>
+            <div className="w-20 text-right">Mcap</div>
+            <div className="w-16 text-right hidden md:block">Time</div>
+          </>
+        )}
         <div className="flex-1 text-right">Action</div>
       </div>
 
       {/* Token List */}
       <div className="flex-1 min-h-0 overflow-y-auto">
-        {tokens.length === 0 ? (
+        {loading ? (
+          <div className="flex items-center justify-center h-32 text-[#5a6078] text-xs animate-pulse">
+            Syncing Terminal...
+          </div>
+        ) : activeTokens.length === 0 ? (
           <div className="flex items-center justify-center h-32 text-[#5a6078] text-xs">
-            No tokens detected
+            No {activeTab.toLowerCase()} tokens detected
           </div>
         ) : (
-          tokens.map((token) => (
+          activeTokens.map((token: any) => (
             <div
-              key={token.name}
+              key={token.mint}
               className="group flex items-center px-3 py-2.5 border-b border-[#1a1f2e]/40 last:border-0 hover:bg-[#00FFA3]/5 transition-all"
             >
               <div className="font-mono font-bold text-sm w-20 truncate text-white">
@@ -90,41 +136,50 @@ export function MarketTerminal({ tweets, narrative }: MarketTerminalProps) {
                 </span>
               </div>
 
-              <div className="font-mono text-[#8b92a8] text-xs w-20 text-right">
-                {token.marketCap}
-              </div>
-
-              <div className="font-mono text-[#5a6078] text-xs w-20 text-right hidden lg:block">
-                {token.volume ?? "—"}
-              </div>
-
-              <div className={`font-mono text-xs font-bold w-16 text-right ${getReturnsColor(token.returns)}`}>
-                {token.returns}
-              </div>
+              {activeTab === "YOUNG" ? (
+                <>
+                  <div className="font-mono text-[#8b92a8] text-[10px] w-16 text-right">
+                    {token.time}
+                  </div>
+                  <div className={`font-mono text-[10px] font-bold w-16 text-right hidden md:block ${getReturnsColor(token.returns)}`}>
+                    {token.returns}
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="font-mono text-[#8b92a8] text-xs w-20 text-right">
+                    {token.mcap}
+                  </div>
+                  <div className="font-mono text-[#5a6078] text-[10px] w-16 text-right hidden md:block">
+                    {token.time}
+                  </div>
+                </>
+              )}
 
               <div className="flex-1 text-right">
-                {token.mint ? (
-                  <a
-                    role="button"
-                    href={`https://jup.ag/swap/SOL-${token.mint}`}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-flex items-center gap-1 border border-[#00FFA3]/40 text-[#00FFA3] rounded-md transition-all hover:bg-[#00FFA3] hover:text-black hover:shadow-[0_0_15px_rgba(0,255,163,0.3)] text-[10px] px-2.5 py-1"
-                  >
-                    Trade
-                  </a>
-                ) : (
-                  <button
-                    disabled
-                    className="border border-[#1a1f2e] text-[#5a6078] rounded-md font-medium text-[10px] px-2.5 py-1 cursor-not-allowed"
-                  >
-                    Trade
-                  </button>
-                )}
+                <a
+                  href={`https://jup.ag/swap/SOL-${token.mint}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center justify-center px-3 py-1 rounded bg-[#00FFA3]/10 border border-[#00FFA3]/20 text-[#00FFA3] text-[10px] font-bold hover:bg-[#00FFA3] hover:text-black transition-all"
+                >
+                  BUY
+                </a>
               </div>
             </div>
           ))
         )}
+      </div>
+
+      {/* Terminal Footer */}
+      <div className="shrink-0 bg-[#05070B]/80 border-t border-[#1a1f2e] px-3 py-2 flex items-center justify-between">
+        <div className="flex items-center gap-1.5">
+          <div className="w-1.5 h-1.5 rounded-full bg-[#00FFA3] animate-pulse" />
+          <span className="text-[9px] font-mono text-[#5a6078] uppercase tracking-tighter">Live Narrative Sync</span>
+        </div>
+        <div className="text-[9px] font-mono text-[#3a4058]">
+          V2.1.0-ALPHA
+        </div>
       </div>
     </div>
   );

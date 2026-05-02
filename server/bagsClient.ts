@@ -205,6 +205,18 @@ export async function bagsGetPoolByMint(tokenMint: string): Promise<unknown> {
   return bagsJson<unknown>(`/solana/bags/pools/token-mint?${q}`, { method: "GET" });
 }
 
+export async function bagsSearchTokens(query: string): Promise<any[]> {
+  try {
+    const q = new URLSearchParams({ query });
+    const data = await bagsJson<any>(`/solana/bags/pools/search?${q}`, { method: "GET" });
+    // Bags usually returns search results in a 'response' or 'data' array
+    return Array.isArray(data.response) ? data.response : (Array.isArray(data.data) ? data.data : []);
+  } catch (e) {
+    console.error(`[bags-search] failed for "${query}":`, e);
+    return [];
+  }
+}
+
 export type BagsAuthPingResult = {
   requested: boolean;
   httpStatus: number;

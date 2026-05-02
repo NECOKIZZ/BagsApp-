@@ -1,4 +1,4 @@
-﻿import { useMemo, useState, type ReactNode } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { useNavigate } from "react-router";
 import nlp from "compromise";
 import {
@@ -29,6 +29,7 @@ export interface Token {
   returns: string;
   score: number;
   mint?: string | null;
+  age?: string;
 }
 
 export interface TweetCardProps {

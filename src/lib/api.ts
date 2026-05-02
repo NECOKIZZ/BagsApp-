@@ -39,6 +39,30 @@ export async function fetchFeed(filter: FeedFilter): Promise<TweetCardProps[]> {
   return data.tweets.map(({ tweet_id, ...rest }) => ({ ...rest, tweetId: tweet_id ?? null }));
 }
 
+export interface TerminalToken {
+  name: string;
+  mint: string;
+  score: number;
+  time: string;
+  mcap: string;
+  volume: string;
+  returns: string;
+}
+
+export interface TerminalResponse {
+  young: TerminalToken[];
+  old: TerminalToken[];
+  myApp: TerminalToken[];
+}
+
+export async function fetchTerminalData(): Promise<TerminalResponse> {
+  const res = await fetch(apiUrl("/api/feed?view=terminal"));
+  if (!res.ok) {
+    throw new Error(`Terminal request failed: ${res.status}`);
+  }
+  return res.json() as Promise<TerminalResponse>;
+}
+
 export type LaunchPayload = {
   narrative: string;
   name: string;

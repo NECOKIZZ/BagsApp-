@@ -17,6 +17,8 @@ import {
   BagsApiError,
   getBagsConfig,
 } from "./bagsClient";
+import { calculateScratchScore, getConcentrationData } from "./scoring";
+import { runNarrativePipeline } from "./narrativePipeline";
 
 const PORT = Number(process.env.PORT) || 3001;
 const app = express();
@@ -473,6 +475,75 @@ app.get("/api/feed", async (req, res) => {
     }
 
     const rows = (data ?? []) as any[];
+    const isTerminal = req.query.view === "terminal";
+
+    if (isTerminal) {
+      // Group all tokens from all tweets in the feed
+      const allTokens: any[] = [];
+      for (const row of rows) {
+        const ts = Array.isArray(row.narrative_tokens) ? row.narrative_tokens : [];
+        allTokens.push(...ts.map((t: any) => ({ ...t, tweet_posted_at: row.posted_at })));
+      }
+
+      // Deduplicate by mint
+      const uniqueMap = new Map<string, any>();
+      for (const t of allTokens) {
+        if (!t.token_mint) continue;
+        if (!uniqueMap.has(t.token_mint)) {
+          uniqueMap.set(t.token_mint, t);
+        }
+      }
+      const uniqueTokens = Array.from(uniqueMap.values());
+
+      const now = new Date();
+      const oneWeekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+
+      const youngTokens = uniqueTokens
+        .filter(t => t.launched_at && new Date(t.launched_at) >= oneWeekAgo)
+        .sort((a, b) => new Date(b.launched_at).getTime() - new Date(a.launched_at).getTime())
+        .slice(0, 10);
+
+      const oldTokens = uniqueTokens
+        .filter(t => t.launched_at && new Date(t.launched_at) < oneWeekAgo)
+        .sort((a, b) => (b.match_score || 0) - (a.match_score || 0) || (b.total_volume || 0) - (a.total_volume || 0))
+        .slice(0, 10);
+
+      const myAppTokens = uniqueTokens
+        .filter(t => t.launched_here === true)
+        .sort((a, b) => new Date(b.launched_at).getTime() - new Date(a.launched_at).getTime())
+        .slice(0, 10);
+
+      return res.json({
+        young: youngTokens.map(t => ({
+          name: t.token_ticker || t.token_name,
+          mint: t.token_mint,
+          score: t.score || t.match_score || 0,
+          time: toRelativeTime(t.launched_at),
+          mcap: formatUsdCompact(t.current_mcap),
+          volume: formatUsdCompact(t.total_volume),
+          returns: String(t.returns || "0%")
+        })),
+        old: oldTokens.map(t => ({
+          name: t.token_ticker || t.token_name,
+          mint: t.token_mint,
+          score: t.score || t.match_score || 0,
+          time: toRelativeTime(t.launched_at),
+          mcap: formatUsdCompact(t.current_mcap),
+          volume: formatUsdCompact(t.total_volume),
+          returns: String(t.returns || "0%")
+        })),
+        myApp: myAppTokens.map(t => ({
+          name: t.token_ticker || t.token_name,
+          mint: t.token_mint,
+          score: t.score || t.match_score || 0,
+          time: toRelativeTime(t.launched_at),
+          mcap: formatUsdCompact(t.current_mcap),
+          volume: formatUsdCompact(t.total_volume),
+          returns: String(t.returns || "0%")
+        }))
+      });
+    }
+
     const normalized = rows.map((row) => {
       const creator = row.creators ?? {};
       const tokens = Array.isArray(row.narrative_tokens) ? row.narrative_tokens : [];
@@ -513,6 +584,7 @@ app.get("/api/feed", async (req, res) => {
           returns: String(t.returns ?? "0%"),
           score: Number(t.score ?? 50),
           mint: t.token_mint ?? null,
+          age: toRelativeTime(t.launched_at),
         })),
       };
     });
@@ -599,6 +671,7 @@ app.get("/api/token/:mint/metrics", async (req, res) => {
           inner.uniqueHolders,
           inner.holder_count,
         );
+        out.score = pickNum(inner.score, inner.scratchScore) ?? out.score;
       } catch (e) {
         console.warn(`[token-metrics] bags lookup failed for ${mint}:`, e);
       }
@@ -1024,6 +1097,14 @@ app.post("/api/launches/:launchId/submit-tx", async (req, res) => {
         })
         .eq("id", launchId);
 
+      // Update narrative_tokens to mark as launched_here
+      if (row.token_mint) {
+        await supabase
+          .from("narrative_tokens")
+          .update({ launched_here: true })
+          .eq("token_mint", row.token_mint);
+      }
+
       res.json({
         ok: true,
         phase: "done" as const,
@@ -1208,6 +1289,10 @@ app.post("/api/webhooks/twitterapi", async (req, res) => {
         console.error("Tweet upsert error:", error);
       } else {
         inserted++;
+        // Trigger Narrative Pipeline asynchronously (fire-and-forget)
+        runNarrativePipeline(tweet).catch((err) =>
+          console.error(`[Pipeline] failed for tweet ${tweet.id}:`, err)
+        );
       }
     }
 
@@ -1550,16 +1635,20 @@ function parseBagsPoolStats(pool: unknown): BagsPoolStats {
 async function refreshBagsTokenStatsOnce(): Promise<void> {
   if (!bagsConfigured()) return;
   const limit = Number(process.env.BAGS_REFRESH_LIMIT ?? 50);
+  const rpcUrl = process.env.HELIUS_RPC_URL || "https://api.mainnet-beta.solana.com";
+
+  // Pull tokens that need refresh
   const { data, error } = await supabase
     .from("narrative_tokens")
-    .select("id, token_mint")
+    .select("*")
     .not("token_mint", "is", null)
     .limit(limit);
+
   if (error) {
     console.error("[bags-refresh] select error:", error.message);
     return;
   }
-  const rows = (data ?? []) as Array<{ id: string; token_mint: string }>;
+  const rows = (data ?? []) as any[];
   if (rows.length === 0) {
     console.log("[bags-refresh] no tokens to refresh");
     return;
@@ -1568,17 +1657,88 @@ async function refreshBagsTokenStatsOnce(): Promise<void> {
   let updated = 0;
   for (const row of rows) {
     try {
-      const pool = await bagsGetPoolByMint(row.token_mint);
+      const mint = row.token_mint;
+      // Only score tokens ending with "bags" as requested
+      const shouldScore = String(mint).toLowerCase().endsWith("bags");
+
+      const pool = await bagsGetPoolByMint(mint);
+      const p = (pool ?? {}) as Record<string, unknown>;
+      const inner =
+        (p.data as Record<string, unknown> | undefined) ??
+        (p.pool as Record<string, unknown> | undefined) ??
+        (p.response as Record<string, unknown> | undefined) ??
+        p;
+
       const stats = parseBagsPoolStats(pool);
-      const patch: Record<string, unknown> = {};
-      if (stats.marketCapUsd != null) patch.current_mcap = stats.marketCapUsd;
-      if (stats.priceUsd != null) patch.current_price = stats.priceUsd;
-      if (stats.volume24hUsd != null) patch.total_volume = stats.volume24hUsd;
-      if (Object.keys(patch).length === 0) continue;
+      const liquidity = pickNum(
+        inner.liquidityUsd,
+        inner.liquidity_usd,
+        inner.liquidity,
+        inner.poolLiquidityUsd,
+        inner.tvlUsd,
+        inner.tvl,
+      );
+      const holders = pickNum(
+        inner.holderCount,
+        inner.holders,
+        inner.uniqueHolders,
+        inner.holder_count,
+      );
+      const lifecycle = (inner.lifecycle || inner.status || "PRE_LAUNCH") as any;
+
+      const patch: Record<string, any> = {
+        current_mcap: stats.marketCapUsd,
+        current_price: stats.priceUsd,
+        total_volume: stats.volume24hUsd,
+        liquidity,
+        holders,
+        lifecycle,
+        updated_at: new Date().toISOString(),
+      };
+
+      if (shouldScore) {
+        // Run concentration check if holders changed significantly or never run
+        let top1 = row.top1_holder_pct;
+        let top5 = row.top5_holder_pct;
+        let flag = row.concentration_flag;
+
+        const holderDiff = Math.abs((holders ?? 0) - (row.holders ?? 0));
+        const significantChange = row.holders ? holderDiff / row.holders > 0.2 : true;
+
+        if (significantChange || top1 === null) {
+          const conc = await getConcentrationData(mint, rpcUrl);
+          top1 = conc.top1Pct;
+          top5 = conc.top5Pct;
+          flag = conc.flag;
+          patch.top1_holder_pct = top1;
+          patch.top5_holder_pct = top5;
+          patch.concentration_flag = flag;
+        }
+
+        const score = calculateScratchScore({
+          mcap: stats.marketCapUsd ?? 0,
+          volume24h: stats.volume24hUsd ?? 0,
+          liquidity: liquidity ?? 0,
+          holders: holders ?? 0,
+          lifecycle,
+          twitter: row.twitter,
+          telegram: row.telegram,
+          website: row.website,
+          buyerRank: row.buyer_rank,
+          returns: row.returns,
+          top1HolderPct: top1,
+          top5HolderPct: top5,
+        });
+
+        patch.score = score;
+        console.log(`[bags-refresh] Scored ${mint}: ${score}`);
+      }
+
       const { error: upErr } = await supabase
         .from("narrative_tokens")
         .update(patch)
         .eq("id", row.id);
+
       if (upErr) {
         console.warn(`[bags-refresh] update fail id=${row.id}:`, upErr.message);
       } else {
