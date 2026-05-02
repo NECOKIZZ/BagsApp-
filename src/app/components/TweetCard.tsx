@@ -15,6 +15,7 @@ import {
   MessageSquare,
   PenSquare,
 } from "lucide-react";
+import { TweetLinkPreview, type LinkPreviewData } from "./TweetLinkPreview";
 
 type TweetKind = "tweet" | "repost" | "quote" | "comment";
 
@@ -47,6 +48,7 @@ export interface TweetCardProps {
   tokens: Token[];
   narrative: string;
   image?: string;
+  linkPreview?: LinkPreviewData | null;
   onSelect?: () => void;
   isSelected?: boolean;
 }
@@ -175,6 +177,7 @@ export function TweetCard({
   tokens,
   narrative,
   image,
+  linkPreview,
   onSelect,
   isSelected = false,
 }: TweetCardProps) {
@@ -267,6 +270,8 @@ export function TweetCard({
 
         <div className="text-[15px] leading-normal text-zinc-200 mb-3 whitespace-pre-wrap">{tweetBody}</div>
 
+        {linkPreview && <TweetLinkPreview preview={linkPreview} />}
+
         {tweetType === "quote" ? (
           <div className="mb-3 rounded-lg border border-zinc-700/70 bg-zinc-900/55 p-3">
             <div className="mb-2 flex items-center gap-2 text-xs text-zinc-400">
@@ -293,11 +298,29 @@ export function TweetCard({
         ) : null}
 
         {image ? (
-          <div className="mb-3 rounded-xl overflow-hidden border border-[#1a1f2e]/60 max-h-64">
+          <div className="mb-3 rounded-xl overflow-hidden border border-[#1a1f2e]/60 bg-black/20">
             {isVideoMedia ? (
-              <video src={image} controls playsInline preload="metadata" className="w-full h-full object-cover" />
+              <video 
+                src={image} 
+                controls 
+                autoPlay 
+                muted 
+                loop 
+                playsInline 
+                preload="metadata" 
+                className="w-full max-h-[450px] object-contain block" 
+              />
             ) : (
-              <img src={image} alt="" className="w-full h-full object-cover" />
+              <img 
+                src={image} 
+                alt="Tweet media" 
+                loading="lazy"
+                className="w-full max-h-[450px] object-contain block" 
+                onError={(e) => {
+                  // Hide container if image fails to load
+                  (e.currentTarget.parentElement as HTMLElement).style.display = "none";
+                }}
+              />
             )}
           </div>
         ) : null}

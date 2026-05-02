@@ -36,7 +36,17 @@ export async function fetchFeed(filter: FeedFilter): Promise<TweetCardProps[]> {
     throw new Error(`Feed request failed: ${res.status}`);
   }
   const data = (await res.json()) as FeedResponse;
-  return data.tweets.map(({ tweet_id, ...rest }) => ({ ...rest, tweetId: tweet_id ?? null }));
+  
+  return data.tweets.map(({ tweet_id, ...rest }) => {
+    const tweet = rest as any;
+    return {
+      ...rest,
+      tweetId: tweet_id ?? null,
+      // Map server 'image_url' to component 'image'
+      image: tweet.image_url || tweet.image || null,
+      linkPreview: tweet.link_preview || null,
+    } as TweetCardProps;
+  });
 }
 
 export interface TerminalToken {

@@ -18,6 +18,7 @@ import {
   getBagsConfig,
 } from "./bagsClient";
 import { calculateScratchScore, getConcentrationData } from "./scoring";
+import { fetchLinkPreview } from "./linkPreview";
 import { runNarrativePipeline } from "./narrativePipeline";
 
 const PORT = Number(process.env.PORT) || 3001;
@@ -1296,6 +1297,22 @@ app.post("/api/webhooks/twitterapi", async (req, res) => {
         }).catch((err) =>
           console.error(`[Pipeline] failed for tweet ${tweet.id}:`, err)
         );
+
+        // Link Preview: Scan for t.co links and enrich in background
+        const tcoMatch = tweet.content.match(/https:\/\/t\.co\/\S+/);
+        if (tcoMatch) {
+          const tcoUrl = tcoMatch[0];
+          fetchLinkPreview(tcoUrl)
+            .then(async (preview) => {
+              if (!preview) return;
+              const { error: upErr } = await supabase
+                .from("tweets")
+                .update({ link_preview: preview })
+                .eq("tweet_id", tweet.id);
+              if (upErr) console.error(`[LinkPreview] DB update fail for ${tweet.id}:`, upErr.message);
+            })
+            .catch((err) => console.error(`[LinkPreview] service fail for ${tweet.id}:`, err));
+        }
       }
     }
 
