@@ -11,22 +11,33 @@ export interface LinkPreviewData {
 export function TweetLinkPreview({ preview }: { preview?: LinkPreviewData | null }) {
   if (!preview || !preview.url) return null;
 
+  // If it's a twitter image, we might need to proxy it to avoid hotlink blocks
+  const imageUrl = preview.image?.includes('pbs.twimg.com') 
+    ? `https://unavatar.io/twitter/${new URL(preview.url).pathname.split('/')[1]}?fallback=${encodeURIComponent(preview.image)}`
+    : preview.image;
+
   return (
     <a
       href={preview.url}
       target="_blank"
       rel="noopener noreferrer"
       onClick={(e) => e.stopPropagation()}
-      className="block border border-[#1a1f2e] rounded-xl overflow-hidden mt-3 hover:border-[#00FFA3]/40 hover:bg-[#0B0F17]/80 transition-all group"
+      className="block border border-[#1a1f2e] rounded-xl overflow-hidden mt-3 hover:border-[#00FFA3]/40 hover:bg-[#0B0F17]/80 transition-all group bg-[#0B0F17]/40"
     >
       {preview.image && (
-        <div className="w-full h-48 overflow-hidden bg-black/20 border-b border-[#1a1f2e]">
+        <div className="w-full relative aspect-video overflow-hidden bg-black/20 border-b border-[#1a1f2e]">
           <img
-            src={preview.image}
+            src={preview.image} // Try direct first
             alt={preview.title || "Link preview"}
             className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105"
+            loading="lazy"
             onError={(e) => {
-              (e.currentTarget.parentElement as HTMLElement).style.display = "none";
+              // Fallback to proxy if direct fails
+              if (e.currentTarget.src !== imageUrl && imageUrl) {
+                e.currentTarget.src = imageUrl;
+              } else {
+                (e.currentTarget.parentElement as HTMLElement).style.display = "none";
+              }
             }}
           />
         </div>
