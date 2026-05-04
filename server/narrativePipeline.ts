@@ -5,7 +5,7 @@ import { bagsConfigured, bagsSearchTokens } from "./bagsClient";
 
 // How many of the AI's candidate token names we actually search on Bags.
 // Lower = fewer Bags calls per tweet. 3 covers most useful cases.
-const MAX_CANDIDATES_TO_SEARCH = 3;
+const MAX_CANDIDATES_TO_SEARCH = 4;
 const MAX_TOKENS_TO_STORE = 10;
 // Delay between Bags search calls within a single tweet (be a polite client).
 const BAGS_SEARCH_DELAY_MS = 250;
@@ -33,26 +33,29 @@ type NarrativeExtraction = {
 };
 
 const SYSTEM_PROMPT =
-  "You are a crypto narrative expert. You analyze tweets to identify their core theme and produce search queries that will surface aligned Solana tokens from a token catalog.";
+  "You analyze tweets to surface candidate Solana memecoins on Bags.fm. In memecoin culture ANY word can be a token — common verbs, slang, single letters, names, vibes. Do NOT filter for 'crypto relevance'.";
 
 const USER_PROMPT = (content: string): string =>
   `Tweet: "${content}"
 
 Your job:
-1. Identify the core narrative/theme in one short sentence.
-2. Produce 3-5 SEARCH TERMS (1-3 words each) that we'll use to find tokens on Bags that align with this tweet's vibe.
-   - If specific tokens are explicitly named, list them FIRST with weight 90-100.
-   - Otherwise, list thematic keywords: categories, narrative tags, related concepts.
-   - Each term must be a plausible token-name search query, not a full sentence.
-   - Order by relevance, highest weight first.
-   - 'reason' is a brief note on why this term aligns.
-3. If the tweet is generic chatter with no usable theme (e.g. just "gm"), return an empty search_terms array.
+1. Write a 1-sentence narrative summary of what the tweet is about (literal, not crypto-coded).
+2. Produce 4-5 SEARCH TERMS (1-2 words each) that could plausibly exist as a memecoin name on Bags.
+   - Pull standout nouns, verbs, slang, names, vibe-words, hashtags, repeated phrases.
+   - "gm", "going", "trend", "agent", "moon", "am", "grok", "fartcoin" — all valid token names.
+   - If the tweet explicitly names a token (cashtag like $BONK or "BONK is mooning"), list it FIRST with weight 95.
+   - Otherwise extract the 4-5 most distinctive words/phrases from the tweet itself.
+   - Even short tweets like "gm" should produce at least one term: ["gm"].
+   - Single-word terms preferred. 2-word phrases only if they're a clear unit ("AI agent", "to the moon").
+   - Order by how distinctive/searchable each term is. Higher weight = more likely to be a real token someone made.
+   - 'reason' is a brief note (e.g. "main verb of tweet", "noun subject", "named cashtag").
 
 Return JSON only (no markdown fences):
 {
   "narrative": "...",
   "search_terms": [
-    { "term": "AI agent", "weight": 85, "reason": "tweet is about AI agents in crypto" }
+    { "term": "going", "weight": 70, "reason": "main verb, vibe word" },
+    { "term": "trend", "weight": 65, "reason": "noun subject" }
   ]
 }`;
 
