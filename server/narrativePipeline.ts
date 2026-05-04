@@ -78,15 +78,22 @@ async function extractWithClaude(content: string): Promise<NarrativeExtraction> 
   return JSON.parse(stripJsonFences(text)) as NarrativeExtraction;
 }
 
-/**
- * Gemini 2.5 Flash via REST. Free tier: 250 req/day, 10 RPM.
- * Uses responseMimeType=application/json so the model returns parseable JSON.
- */
-async function extractWithGemini(content: string): Promise<NarrativeExtraction> {
-  const apiKey = process.env.GEMINI_API_KEY?.trim();
-  if (!apiKey) throw new Error("GEMINI_API_KEY missing");
+/** Transient HTTP statuses worth retrying with backoff. */
+const TRANSIENT_GEMINI_STATUSES = new Set([429, 500, 502, 503, 504]);
 
-  const model = process.env.GEMINI_MODEL?.trim() || "gemini-2.5-flash";
+/** Comma-separated env var, e.g. "gemini-2.5-flash,gemini-2.5-flash-lite". */
+function geminiModelChain(): string[] {
+  const env = process.env.GEMINI_MODEL?.trim();
+  if (env) return env.split(",").map((s) => s.trim()).filter(Boolean);
+  // Default chain: Flash first, then Lite as overload fallback.
+  return ["gemini-2.5-flash", "gemini-2.5-flash-lite"];
+}
+
+async function callGeminiOnce(
+  model: string,
+  apiKey: string,
+  content: string,
+): Promise<NarrativeExtraction> {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
     model,
   )}:generateContent?key=${encodeURIComponent(apiKey)}`;
@@ -108,7 +115,11 @@ async function extractWithGemini(content: string): Promise<NarrativeExtraction> 
   });
   if (!res.ok) {
     const errText = await res.text().catch(() => "");
-    throw new Error(`Gemini ${res.status}: ${errText.slice(0, 200)}`);
+    const err = new Error(`Gemini ${res.status}: ${errText.slice(0, 200)}`) as Error & {
+      status: number;
+    };
+    err.status = res.status;
+    throw err;
   }
   const data = (await res.json()) as {
     candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
@@ -116,6 +127,44 @@ async function extractWithGemini(content: string): Promise<NarrativeExtraction> 
   const text = data.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
   if (!text) throw new Error("Gemini returned empty response");
   return JSON.parse(stripJsonFences(text)) as NarrativeExtraction;
+}
+
+/**
+ * Gemini via REST with retry + model-chain fallback.
+ * - Retries the same model with exponential backoff on transient errors (503/429/etc).
+ * - If retries are exhausted, advances to the next model in GEMINI_MODEL chain.
+ * Default chain: gemini-2.5-flash → gemini-2.5-flash-lite.
+ */
+async function extractWithGemini(content: string): Promise<NarrativeExtraction> {
+  const apiKey = process.env.GEMINI_API_KEY?.trim();
+  if (!apiKey) throw new Error("GEMINI_API_KEY missing");
+
+  const models = geminiModelChain();
+  const RETRIES_PER_MODEL = 2;
+  let lastErr: unknown = null;
+
+  for (const model of models) {
+    for (let attempt = 0; attempt <= RETRIES_PER_MODEL; attempt++) {
+      try {
+        return await callGeminiOnce(model, apiKey, content);
+      } catch (err) {
+        lastErr = err;
+        const status = (err as { status?: number }).status;
+        const transient = status !== undefined && TRANSIENT_GEMINI_STATUSES.has(status);
+        if (!transient) break; // permanent error — try next model immediately
+        if (attempt < RETRIES_PER_MODEL) {
+          const backoffMs = 1000 * Math.pow(2, attempt); // 1s, 2s
+          console.warn(
+            `[Gemini] ${model} transient ${status}, retry ${attempt + 1}/${RETRIES_PER_MODEL} in ${backoffMs}ms`,
+          );
+          await sleep(backoffMs);
+        }
+      }
+    }
+    console.warn(`[Gemini] ${model} exhausted, trying next model in chain.`);
+  }
+
+  throw lastErr instanceof Error ? lastErr : new Error("Gemini failed (all models)");
 }
 
 /** True for Anthropic errors that mean "switch provider, don't retry Claude". */
