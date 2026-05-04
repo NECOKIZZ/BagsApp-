@@ -205,14 +205,32 @@ export async function bagsGetPoolByMint(tokenMint: string): Promise<unknown> {
   return bagsJson<unknown>(`/solana/bags/pools/token-mint?${q}`, { method: "GET" });
 }
 
-export async function bagsSearchTokens(query: string): Promise<any[]> {
+/** Pool record returned by GET /solana/bags/pools (per Bags docs). */
+export type BagsPoolInfo = {
+  tokenMint: string;
+  dbcConfigKey: string;
+  dbcPoolKey: string;
+  dammV2PoolKey?: string | null;
+};
+
+/**
+ * List all Bags pools. Bags has no name/keyword search endpoint — this is the
+ * authoritative way to know which mints exist on the platform.
+ *
+ * The response is mint-only (no metadata); callers must combine this with a
+ * metadata source like Jupiter to get token names/symbols.
+ */
+export async function bagsListAllPools(opts: { onlyMigrated?: boolean } = {}): Promise<BagsPoolInfo[]> {
   try {
-    const q = new URLSearchParams({ query });
-    const data = await bagsJson<any>(`/solana/bags/pools/search?${q}`, { method: "GET" });
-    // Bags usually returns search results in a 'response' or 'data' array
-    return Array.isArray(data.response) ? data.response : (Array.isArray(data.data) ? data.data : []);
+    const q = new URLSearchParams();
+    if (opts.onlyMigrated) q.set("onlyMigrated", "true");
+    const path = `/solana/bags/pools${q.toString() ? `?${q}` : ""}`;
+    const data = await bagsJson<{ success: boolean; response?: BagsPoolInfo[] }>(path, {
+      method: "GET",
+    });
+    return Array.isArray(data.response) ? data.response : [];
   } catch (e) {
-    console.error(`[bags-search] failed for "${query}":`, e);
+    console.error("[bags-list-pools] failed:", e);
     return [];
   }
 }

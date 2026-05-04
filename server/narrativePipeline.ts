@@ -1,6 +1,7 @@
 
 import Anthropic from "@anthropic-ai/sdk";
 import { supabase } from "./supabaseClient";
+import { bagsListAllPools } from "./bagsClient";
 
 // How many of the AI's candidate token terms we actually search.
 const MAX_CANDIDATES_TO_SEARCH = 4;
@@ -9,8 +10,31 @@ const MAX_RESULTS_PER_TERM = 5;
 const MAX_TOKENS_TO_STORE = 10;
 // Delay between search calls (be a polite client).
 const SEARCH_DELAY_MS = 250;
+// How long to trust the cached Bags pool list before refetching.
+const BAGS_POOLS_CACHE_TTL_MS = 5 * 60 * 1000;
 
 const JUPITER_SEARCH_URL = "https://lite-api.jup.ag/tokens/v2/search";
+
+// Module-level cache of Bags-launched mints. Bags' catalog grows slowly so a
+// 5-minute cache massively reduces calls when many tweets process in a row.
+let bagsMintCache: { set: Set<string>; fetchedAt: number } | null = null;
+
+async function getBagsMintSet(): Promise<Set<string>> {
+  const now = Date.now();
+  if (bagsMintCache && now - bagsMintCache.fetchedAt < BAGS_POOLS_CACHE_TTL_MS) {
+    return bagsMintCache.set;
+  }
+  const pools = await bagsListAllPools();
+  if (pools.length === 0 && bagsMintCache) {
+    // Fetch failed — keep the stale cache rather than wiping all matches.
+    console.warn("[NarrativePipeline] bagsListAllPools returned 0; keeping stale cache.");
+    return bagsMintCache.set;
+  }
+  const set = new Set(pools.map((p) => p.tokenMint));
+  bagsMintCache = { set, fetchedAt: now };
+  console.log(`[NarrativePipeline] cached ${set.size} Bags pool mints`);
+  return set;
+}
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
@@ -299,6 +323,14 @@ async function searchAndScoreTokens(
     return [];
   }
 
+  // Cached set of all Bags pool mints. Jupiter hits not in this set are dropped
+  // so we only ever surface tokens that actually exist on the Bags platform.
+  const bagsMints = await getBagsMintSet();
+  if (bagsMints.size === 0) {
+    console.warn(`[NarrativePipeline] Bags pool list empty — cannot filter, skipping search.`);
+    return [];
+  }
+
   const seen = new Map<string, StoredMatch>();
 
   // Limit how many term searches we fire so a chatty AI doesn't burn quota.
@@ -317,10 +349,13 @@ async function searchAndScoreTokens(
     firstCall = false;
 
     const hits = await jupiterSearchTokens(q);
-    console.log(`[NarrativePipeline]   jupiter "${q}" → ${hits.length} results`);
+    const onBags = hits.filter((h) => bagsMints.has(h.mint));
+    console.log(
+      `[NarrativePipeline]   jupiter "${q}" → ${hits.length} results, ${onBags.length} on Bags`,
+    );
     const aiScore = Math.max(0, Math.min(100, Number(t.weight) || 0));
 
-    for (const h of hits) {
+    for (const h of onBags) {
       // First match for this mint wins (terms are ordered by relevance).
       if (seen.has(h.mint)) continue;
       // Final score = AI confidence (0-100) gently nudged by token quality (0-100, /4).
