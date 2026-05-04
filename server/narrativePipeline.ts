@@ -1,7 +1,7 @@
 
 import Anthropic from "@anthropic-ai/sdk";
 import { supabase } from "./supabaseClient";
-import { bagsListAllPools } from "./bagsClient";
+import { bagsListAllPools, bagsFetchFeed, type BagsFeedToken } from "./bagsClient";
 
 // How many of the AI's candidate token terms we actually search.
 const MAX_CANDIDATES_TO_SEARCH = 4;
@@ -14,9 +14,84 @@ const MAX_TOKENS_TO_STORE = 10;
 const SEARCH_DELAY_MS = 250;
 // How long to trust the cached Bags pool list before refetching.
 const BAGS_POOLS_CACHE_TTL_MS = 5 * 60 * 1000;
+// Feed cache refresh interval (default 10 minutes).
+const FEED_CACHE_INTERVAL_MS = Number(process.env.FEED_CACHE_INTERVAL_MS ?? 10 * 60 * 1000);
+// Minimum feed cache hits before we bother with Jupiter fallback.
+const FEED_CACHE_MIN_HITS = 3;
 
 const JUPITER_SEARCH_URL = "https://lite-api.jup.ag/tokens/v2/search";
 
+// ── Source 1: Bags Feed Cache (fresh tokens) ─────────────────
+// In-memory cache of all tokens from the Bags feed endpoint.
+// Keyed by tokenMint for deduplication; searched by name + symbol.
+let feedCache: Map<string, BagsFeedToken> = new Map();
+let feedCacheRefreshedAt = 0;
+
+/**
+ * Fetches the Bags feed and replaces the in-memory cache.
+ * Exported so index.ts can call it on startup.
+ */
+export async function refreshFeedCache(): Promise<void> {
+  const tokens = await bagsFetchFeed();
+  if (tokens.length === 0 && feedCache.size > 0) {
+    console.warn("[NarrativePipeline] feed refresh returned 0 tokens; keeping stale cache.");
+    return;
+  }
+  feedCache = new Map(tokens.map((t) => [t.tokenMint, t]));
+  feedCacheRefreshedAt = Date.now();
+  console.log(`[NarrativePipeline] feed cache refreshed: ${feedCache.size} tokens`);
+}
+
+/**
+ * Starts the periodic feed cache refresher.
+ * Called once from index.ts on server boot.
+ */
+export function startFeedCacheRefresher(): void {
+  console.log(`[feed-cache] enabled, interval=${Math.round(FEED_CACHE_INTERVAL_MS / 1000)}s`);
+  // First refresh after a short delay so startup logs finish.
+  setTimeout(() => {
+    void refreshFeedCache();
+    setInterval(() => void refreshFeedCache(), FEED_CACHE_INTERVAL_MS);
+  }, 5_000);
+}
+
+/**
+ * Search the feed cache by matching a query against name and symbol ONLY.
+ * No description matching — too loose and produces false positives with common words.
+ * Case-insensitive substring match.
+ */
+function searchFeedCache(query: string): SearchHit[] {
+  const q = query.toLowerCase().trim();
+  if (!q) return [];
+
+  const results: SearchHit[] = [];
+  for (const token of feedCache.values()) {
+    const nameLower = (token.name || "").toLowerCase();
+    const symbolLower = (token.symbol || "").toLowerCase();
+
+    // Exact symbol match gets highest priority
+    const exactSymbol = symbolLower === q;
+    // Substring match on name or symbol
+    const nameMatch = nameLower.includes(q);
+    const symbolMatch = symbolLower.includes(q);
+
+    if (exactSymbol || nameMatch || symbolMatch) {
+      // Quality boost: exact symbol match = 80, name match = 60, partial symbol = 50
+      const quality = exactSymbol ? 80 : nameMatch ? 60 : 50;
+      results.push({
+        mint: token.tokenMint,
+        name: token.name,
+        symbol: token.symbol,
+        quality,
+      });
+    }
+  }
+
+  // Sort: exact symbol matches first, then by quality
+  return results.sort((a, b) => b.quality - a.quality);
+}
+
+// ── Source 2: Bags Mint Set Cache (for Jupiter filtering) ────
 // Module-level cache of Bags-launched mints. Bags' catalog grows slowly so a
 // 5-minute cache massively reduces calls when many tweets process in a row.
 let bagsMintCache: { set: Set<string>; fetchedAt: number } | null = null;
@@ -37,6 +112,7 @@ async function getBagsMintSet(): Promise<Set<string>> {
   console.log(`[NarrativePipeline] cached ${set.size} Bags pool mints`);
   return set;
 }
+
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
@@ -315,9 +391,12 @@ async function jupiterSearchTokens(query: string): Promise<SearchHit[]> {
 }
 
 /**
- * Run each AI search term through Jupiter, dedupe by mint, take top N by score.
- * A token's score is the AI's weight for the FIRST term that surfaced it,
- * boosted slightly by Jupiter's quality signal.
+ * Dual-source token search:
+ *   Source 1 — Bags feed cache (fresh tokens, name+symbol match, no validation needed)
+ *   Source 2 — Jupiter + Bags mint filter (fallback for terms with < 3 feed cache hits)
+ *
+ * Dedupes by tokenMint. Feed cache hits get a +10 quality boost.
+ * Takes top 10 across all terms and stores in narrative_tokens.
  */
 async function searchAndScoreTokens(
   tweet_id: string,
@@ -325,14 +404,6 @@ async function searchAndScoreTokens(
 ): Promise<StoredMatch[]> {
   if (!searchTerms || searchTerms.length === 0) {
     console.log(`[NarrativePipeline] tweet ${tweet_id}: AI returned no search terms.`);
-    return [];
-  }
-
-  // Cached set of all Bags pool mints. Jupiter hits not in this set are dropped
-  // so we only ever surface tokens that actually exist on the Bags platform.
-  const bagsMints = await getBagsMintSet();
-  if (bagsMints.size === 0) {
-    console.warn(`[NarrativePipeline] Bags pool list empty — cannot filter, skipping search.`);
     return [];
   }
 
@@ -345,26 +416,27 @@ async function searchAndScoreTokens(
     top.map((t) => `"${t.term}" (${t.weight})`).join(", "),
   );
 
-  let firstCall = true;
+  // Lazy-load the Bags mint set only if we need Jupiter fallback.
+  let bagsMints: Set<string> | null = null;
+
+  let firstJupiterCall = true;
   for (const t of top) {
     const q = (t.term || "").trim();
     if (!q) continue;
 
-    if (!firstCall) await sleep(SEARCH_DELAY_MS);
-    firstCall = false;
-
-    const hits = await jupiterSearchTokens(q);
-    const onBags = hits.filter((h) => bagsMints.has(h.mint));
-    console.log(
-      `[NarrativePipeline]   jupiter "${q}" → ${hits.length} results, ${onBags.length} on Bags`,
-    );
     const aiScore = Math.max(0, Math.min(100, Number(t.weight) || 0));
 
-    for (const h of onBags) {
-      // First match for this mint wins (terms are ordered by relevance).
+    // ── Source 1: Feed cache (instant, all results are confirmed Bags tokens)
+    const feedHits = searchFeedCache(q);
+    if (feedHits.length > 0) {
+      console.log(
+        `[NarrativePipeline] feed cache hit "${q}" → ${feedHits.length} results`,
+      );
+    }
+    for (const h of feedHits) {
       if (seen.has(h.mint)) continue;
-      // Final score = AI confidence (0-100) gently nudged by token quality (0-100, /4).
-      const finalScore = Math.min(100, Math.round(aiScore + h.quality / 4));
+      // Feed cache tokens get a +10 boost since they're confirmed fresh Bags launches.
+      const finalScore = Math.min(100, Math.round(aiScore + (h.quality + 10) / 4));
       seen.set(h.mint, {
         tweet_id,
         token_mint: h.mint,
@@ -374,12 +446,48 @@ async function searchAndScoreTokens(
         score: finalScore,
       });
     }
+
+    // ── Source 2: Jupiter fallback (only if feed cache returned < FEED_CACHE_MIN_HITS)
+    if (feedHits.length < FEED_CACHE_MIN_HITS) {
+      // Lazy-load the mint set on first Jupiter call.
+      if (!bagsMints) {
+        bagsMints = await getBagsMintSet();
+        if (bagsMints.size === 0) {
+          console.warn(`[NarrativePipeline] Bags pool list empty — Jupiter fallback disabled.`);
+        }
+      }
+
+      if (bagsMints && bagsMints.size > 0) {
+        if (!firstJupiterCall) await sleep(SEARCH_DELAY_MS);
+        firstJupiterCall = false;
+
+        const hits = await jupiterSearchTokens(q);
+        const onBags = hits.filter((h) => bagsMints!.has(h.mint));
+        console.log(
+          `[NarrativePipeline] jupiter fallback "${q}" → ${hits.length} results, ${onBags.length} on Bags`,
+        );
+
+        for (const h of onBags) {
+          if (seen.has(h.mint)) continue;
+          const finalScore = Math.min(100, Math.round(aiScore + h.quality / 4));
+          seen.set(h.mint, {
+            tweet_id,
+            token_mint: h.mint,
+            token_name: h.name,
+            token_ticker: h.symbol,
+            match_score: finalScore,
+            score: finalScore,
+          });
+        }
+      }
+    }
   }
 
   return Array.from(seen.values())
     .sort((a, b) => b.match_score - a.match_score)
     .slice(0, MAX_TOKENS_TO_STORE);
 }
+
 
 export async function runNarrativePipeline({
   tweet_id,

@@ -21,7 +21,7 @@ import {
 } from "./bagsClient";
 import { calculateScratchScore, getConcentrationData } from "./scoring";
 import { fetchLinkPreview } from "./linkPreview";
-import { runNarrativePipeline } from "./narrativePipeline";
+import { runNarrativePipeline, startFeedCacheRefresher } from "./narrativePipeline";
 
 const PORT = Number(process.env.PORT) || 3001;
 const app = express();
@@ -1902,4 +1902,5 @@ app.listen(PORT, () => {
   startMetricsRefresher();
   startCleanupJob();
   startBagsRefresher();
+  startFeedCacheRefresher();
 });

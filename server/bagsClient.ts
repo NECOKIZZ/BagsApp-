@@ -235,6 +235,65 @@ export async function bagsListAllPools(opts: { onlyMigrated?: boolean } = {}): P
   }
 }
 
+// ── Bags Feed (token-launch/feed) ────────────────────────────
+/** Shape of each token from the Bags feed endpoint. */
+export type BagsFeedToken = {
+  tokenMint: string;
+  name: string;
+  symbol: string;
+  description: string;
+};
+
+/**
+ * Fetches the Bags token-launch feed.
+ * Returns fresh/trending tokens with full metadata (name, symbol, description).
+ * These are all confirmed Bags tokens — no further mint validation needed.
+ */
+export async function bagsFetchFeed(): Promise<BagsFeedToken[]> {
+  try {
+    const data = await bagsJson<{ success: boolean; response?: unknown }>("/token-launch/feed", {
+      method: "GET",
+    });
+
+    // The response shape may vary; defensively extract an array of token objects.
+    const raw = Array.isArray(data.response)
+      ? data.response
+      : Array.isArray(data)
+        ? data
+        : [];
+
+    return raw
+      .map((item: Record<string, unknown>) => {
+        const tokenMint =
+          (item.tokenMint as string) ??
+          (item.token_mint as string) ??
+          (item.mint as string) ??
+          "";
+        const name =
+          (item.name as string) ??
+          (item.tokenName as string) ??
+          (item.token_name as string) ??
+          "";
+        const symbol =
+          (item.symbol as string) ??
+          (item.ticker as string) ??
+          (item.tokenTicker as string) ??
+          "";
+        const description =
+          (item.description as string) ??
+          (item.desc as string) ??
+          "";
+
+        if (!tokenMint) return null;
+        return { tokenMint, name, symbol, description };
+      })
+      .filter((x): x is BagsFeedToken => x !== null);
+  } catch (e) {
+    console.error("[bags-feed] fetch failed:", e instanceof Error ? e.message : e);
+    return [];
+  }
+}
+
 export type BagsAuthPingResult = {
   requested: boolean;
   httpStatus: number;
