@@ -21,6 +21,8 @@ export type LaunchResult = {
   mintUrl?: string;
   signature?: string;
   launchId: string;
+  /** Solana mint address of the launched token, if available. */
+  tokenMint?: string;
 };
 
 export type LaunchAuth = {
@@ -78,9 +80,14 @@ export async function runBagsLaunch(
   onStep("creating_token");
   const start = await postLaunch({ ...payload, wallet: address }, { authToken: token });
 
+  // Server returns the mint in launch.token_mint; fall back to parsing mintUrl.
+  const tokenMintFromLaunch = (start.launch.token_mint as string | undefined) ?? undefined;
+  const tokenMintFromUrl = start.bags?.mintUrl?.split("/").pop();
+  const tokenMint: string | undefined = tokenMintFromLaunch || tokenMintFromUrl || undefined;
+
   if (!start.bags) {
     onStep("done", start.message ?? "Saved without Bags integration.");
-    return { launchId: start.launch.id };
+    return { launchId: start.launch.id, tokenMint };
   }
 
   let next: string | null = start.bags.nextTransaction;
@@ -103,14 +110,14 @@ export async function runBagsLaunch(
 
     if (step.phase === "done") {
       onStep("done");
-      return { launchId: start.launch.id, signature: lastSignature, mintUrl };
+      return { launchId: start.launch.id, signature: lastSignature, mintUrl, tokenMint };
     }
     next = step.nextTransaction;
     if (!next) throw new Error("Launch flow ended without a final signature.");
   }
 
   onStep("done");
-  return { launchId: start.launch.id, signature: lastSignature, mintUrl };
+  return { launchId: start.launch.id, signature: lastSignature, mintUrl, tokenMint };
 }
 
 export const stepLabel: Record<LaunchStep, string> = {

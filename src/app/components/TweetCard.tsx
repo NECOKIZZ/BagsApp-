@@ -354,7 +354,7 @@ export function TweetCard({
           <button
             onClick={(e) => {
               e.stopPropagation();
-              navigate("/tokenize", { state: { narrative, suggestedName } });
+              navigate("/tokenize", { state: { narrative, suggestedName, tweetId } });
             }}
             className="bg-[#00FFA3] hover:bg-[#33ffb5] text-black font-bold rounded-md transition-colors active:translate-y-[1px] px-4 py-1.5 text-xs border border-[#00FFA3]"
           >

@@ -1,7 +1,9 @@
 import "./loadEnv";
 import express from "express";
 import cors from "cors";
-import { randomUUID } from "node:crypto";
+import helmet from "helmet";
+import rateLimitLib from "express-rate-limit";
+import { randomUUID, timingSafeEqual } from "node:crypto";
 import nacl from "tweetnacl";
 import bs58 from "bs58";
 import { ENV_PROJECT_ROOT, refreshBagsApiKeyFromEnvFile } from "./loadEnv";
@@ -23,8 +25,63 @@ import { runNarrativePipeline } from "./narrativePipeline";
 
 const PORT = Number(process.env.PORT) || 3001;
 const app = express();
-app.use(cors({ origin: true }));
-app.use(express.json());
+
+// ── CORS allowlist ───────────────────────────────────────────
+// Set CORS_ORIGINS in .env as a comma-separated list (e.g. "https://bagsapp.vercel.app,http://localhost:5173").
+// If unset, allows all origins (dev convenience). In production, always set this.
+const CORS_ORIGINS = (process.env.CORS_ORIGINS ?? "")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
+app.use(
+  cors({
+    origin: CORS_ORIGINS.length === 0 ? true : CORS_ORIGINS,
+    credentials: false,
+  }),
+);
+
+// Cap JSON body at 256kb to prevent OOM from malicious payloads.
+app.use(express.json({ limit: "256kb" }));
+
+// ── Security headers (helmet) ────────────────────────────────
+// Disable contentSecurityPolicy by default since this server is API-only;
+// enable + tune it once you have a stable list of frontend asset origins.
+app.use(
+  helmet({
+    contentSecurityPolicy: false,
+    crossOriginResourcePolicy: { policy: "cross-origin" },
+  }),
+);
+
+// Trust the first proxy hop (Railway terminates TLS in front of us).
+// Required for express-rate-limit to read req.ip correctly.
+app.set("trust proxy", 1);
+
+// ── Rate limits per route family ─────────────────────────────
+// Auth is the most abuse-prone; keep it tight. Launches are expensive.
+// Feed is read-only but can be scraped; moderate. Admin is internal; tight.
+const makeLimiter = (windowMs: number, max: number) =>
+  rateLimitLib({
+    windowMs,
+    max,
+    standardHeaders: "draft-7",
+    legacyHeaders: false,
+    message: { error: "rate_limited" },
+  });
+
+app.use("/api/auth", makeLimiter(60_000, 20));
+app.use("/api/launches", makeLimiter(60_000, 10));
+app.use("/api/feed", makeLimiter(60_000, 60));
+app.use("/api/admin", makeLimiter(60_000, 10));
+// Webhook has its own key check; no rate limit to avoid dropping legitimate bursts.
+
+// Constant-time string compare (prevents timing attacks on webhook key).
+function safeEqual(a: string, b: string): boolean {
+  const aBuf = Buffer.from(a);
+  const bBuf = Buffer.from(b);
+  if (aBuf.length !== bBuf.length) return false;
+  return timingSafeEqual(aBuf, bBuf);
+}
 
 // ── Filter helper ────────────────────────────────────────────
 type FeedFilter = "all" | "noTokens" | "highScore";
@@ -1099,12 +1156,30 @@ app.post("/api/launches/:launchId/submit-tx", async (req, res) => {
         })
         .eq("id", launchId);
 
-      // Update narrative_tokens to mark as launched_here
+      // Upsert narrative_tokens row so the token shows up in feeds & detail pages
+      // even if it was launched fresh from a tweet that had no prior token entry.
+      // Conflict key: token_mint (must be UNIQUE in the schema).
       if (launch.token_mint) {
-        await supabase
+        const initialStats = parseBagsPoolStats(pool);
+        const nowIso = new Date().toISOString();
+        const upsertRow: Record<string, unknown> = {
+          token_mint: launch.token_mint,
+          token_name: launch.token_name ?? null,
+          token_ticker: launch.token_ticker ?? null,
+          tweet_id: launch.tweet_id ?? null,
+          launched_here: true,
+          launched_at: nowIso,
+          updated_at: nowIso,
+          current_mcap: initialStats.marketCapUsd ?? null,
+          current_price: initialStats.priceUsd ?? null,
+          total_volume: initialStats.volume24hUsd ?? null,
+        };
+        const { error: upsertErr } = await supabase
           .from("narrative_tokens")
-          .update({ launched_here: true })
-          .eq("token_mint", launch.token_mint);
+          .upsert(upsertRow, { onConflict: "token_mint" });
+        if (upsertErr) {
+          console.warn("[launch] narrative_tokens upsert failed:", upsertErr);
+        }
       }
 
       res.json({
@@ -1232,7 +1307,7 @@ app.post("/api/webhooks/twitterapi", async (req, res) => {
   try {
     const expectedKey = process.env.TWITTERAPI_WEBHOOK_KEY?.trim();
     const receivedKey = (req.header("x-api-key") || req.header("X-API-Key") || "").trim();
-    if (expectedKey && receivedKey !== expectedKey) {
+    if (expectedKey && !safeEqual(receivedKey, expectedKey)) {
       console.warn("[twitterapi-webhook] rejected: bad/missing X-API-Key");
       res.status(401).json({ error: "unauthorized" });
       return;

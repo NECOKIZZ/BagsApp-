@@ -18,7 +18,17 @@ function apiUrl(path: string): string {
 
 export type FeedFilter = "all" | "noTokens" | "highScore";
 
-type ServerTweet = Omit<TweetCardProps, "tweetId"> & { tweet_id?: string | null };
+/**
+ * Wire shape returned by GET /api/feed. Server uses snake_case for some fields
+ * (tweet_id, image_url, link_preview) while the React component prefers
+ * camelCase. Keep these in sync with server/index.ts:/api/feed.
+ */
+type ServerTweet = Omit<TweetCardProps, "tweetId" | "image" | "linkPreview"> & {
+  tweet_id?: string | null;
+  image_url?: string | null;
+  image?: string | null;
+  link_preview?: TweetCardProps["linkPreview"];
+};
 
 type FeedResponse = {
   tweets: ServerTweet[];
@@ -36,17 +46,15 @@ export async function fetchFeed(filter: FeedFilter): Promise<TweetCardProps[]> {
     throw new Error(`Feed request failed: ${res.status}`);
   }
   const data = (await res.json()) as FeedResponse;
-  
-  return data.tweets.map(({ tweet_id, ...rest }) => {
-    const tweet = rest as any;
-    return {
+
+  return data.tweets.map(
+    ({ tweet_id, image_url, image, link_preview, ...rest }): TweetCardProps => ({
       ...rest,
       tweetId: tweet_id ?? null,
-      // Map server 'image_url' to component 'image'
-      image: tweet.image_url || tweet.image || null,
-      linkPreview: tweet.link_preview || null,
-    } as TweetCardProps;
-  });
+      image: image_url ?? image ?? undefined,
+      linkPreview: link_preview ?? null,
+    }),
+  );
 }
 
 export interface TerminalToken {
@@ -65,6 +73,25 @@ export interface TerminalResponse {
   myApp: TerminalToken[];
 }
 
+export type TokenMetrics = {
+  mint: string;
+  marketCapUsd: number | null;
+  priceUsd: number | null;
+  volume24hUsd: number | null;
+  liquidityUsd: number | null;
+  holders: number | null;
+  score: number | null;
+};
+
+/** Fetch live token metrics for a Solana mint (mcap, price, volume, etc). */
+export async function fetchTokenMetrics(mint: string): Promise<TokenMetrics> {
+  const res = await fetch(apiUrl(`/api/token/${encodeURIComponent(mint)}/metrics`));
+  if (!res.ok) {
+    throw new Error(`Token metrics request failed: ${res.status}`);
+  }
+  return res.json() as Promise<TokenMetrics>;
+}
+
 export async function fetchTerminalData(): Promise<TerminalResponse> {
   const res = await fetch(apiUrl("/api/feed?view=terminal"));
   if (!res.ok) {
@@ -80,6 +107,8 @@ export type LaunchPayload = {
   liquiditySol: string;
   wallet?: string;
   imageUrl?: string;
+  /** Source tweet id — enables linking launches back to the originating tweet. */
+  tweetId?: string | null;
 };
 
 export type LaunchStartResponse = {
@@ -100,10 +129,13 @@ export async function postLaunch(
   if (opts?.authToken) {
     headers.Authorization = `Bearer ${opts.authToken}`;
   }
+  // Server expects snake_case `tweet_id`; translate before sending.
+  const { tweetId, ...rest } = payload;
+  const body = { ...rest, tweet_id: tweetId ?? null };
   const res = await fetch(apiUrl("/api/launches"), {
     method: "POST",
     headers,
-    body: JSON.stringify(payload),
+    body: JSON.stringify(body),
   });
   if (!res.ok) {
     throw await buildApiError(res, `Launch failed: ${res.status}`);

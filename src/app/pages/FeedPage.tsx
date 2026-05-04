@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Link, useLocation } from "react-router";
 import { TweetCard } from "../components/TweetCard";
+import { NavButtons } from "../components/NavButtons";
 import type { TweetCardProps } from "../components/TweetCard";
 import { TweetCardSkeleton } from "../components/TweetCardSkeleton";
 import { MarketTerminal } from "../components/MarketTerminal";
@@ -16,7 +16,6 @@ import {
 import { getPhantom, hasAnySolanaWallet, shortAddress } from "../../lib/phantom";
 
 export function FeedPage() {
-  const location = useLocation();
   const [filter, setFilter] = useState<FeedFilter>("all");
   const [tweets, setTweets] = useState<TweetCardProps[]>([]);
   const [loading, setLoading] = useState(true);
@@ -199,55 +198,7 @@ export function FeedPage() {
           <RefreshCw className={`h-4 w-4 text-[#8b92a8] ${isRefreshing ? "animate-spin" : ""}`} />
         </button>
 
-        {/* Desktop: centered absolute nav */}
-        <div className="absolute inset-x-0 hidden sm:flex justify-center pointer-events-none">
-          <div className="flex items-center gap-2 pointer-events-auto">
-            <Link
-              to="/"
-              className={`px-5 py-2 text-sm font-bold tracking-widest rounded-lg transition-all ${
-                location.pathname === "/"
-                  ? "bg-[#00FFA3] text-black shadow-[0_0_20px_rgba(0,255,163,0.35)] scale-105"
-                  : "bg-[#0B0F17] text-[#8b92a8] border border-[#1a1f2e] hover:border-[#242b3d] hover:text-white hover:shadow-[0_0_10px_rgba(255,255,255,0.05)]"
-              }`}
-            >
-              FEED
-            </Link>
-            <Link
-              to="/profile"
-              className={`px-5 py-2 text-sm font-bold tracking-widest rounded-lg transition-all ${
-                location.pathname === "/profile"
-                  ? "bg-[#00FFA3] text-black shadow-[0_0_20px_rgba(0,255,163,0.35)] scale-105"
-                  : "bg-[#0B0F17] text-[#8b92a8] border border-[#1a1f2e] hover:border-[#242b3d] hover:text-white hover:shadow-[0_0_10px_rgba(255,255,255,0.05)]"
-              }`}
-            >
-              PORTFOLIO
-            </Link>
-          </div>
-        </div>
-
-        {/* Mobile: inline compact nav */}
-        <div className="flex sm:hidden items-center gap-1.5">
-          <Link
-            to="/"
-            className={`px-2 py-1 text-[10px] font-bold tracking-widest rounded-md transition-all ${
-              location.pathname === "/"
-                ? "bg-[#00FFA3] text-black shadow-[0_0_12px_rgba(0,255,163,0.35)] scale-105"
-                : "bg-[#0B0F17] text-[#8b92a8] border border-[#1a1f2e] hover:border-[#242b3d] hover:text-white"
-            }`}
-          >
-            FEED
-          </Link>
-          <Link
-            to="/profile"
-            className={`px-2 py-1 text-[10px] font-bold tracking-widest rounded-md transition-all ${
-              location.pathname === "/profile"
-                ? "bg-[#00FFA3] text-black shadow-[0_0_12px_rgba(0,255,163,0.35)] scale-105"
-                : "bg-[#0B0F17] text-[#8b92a8] border border-[#1a1f2e] hover:border-[#242b3d] hover:text-white"
-            }`}
-          >
-            PORTFOLIO
-          </Link>
-        </div>
+        <NavButtons />
 
         {/* Spacer pushes wallet to right */}
         <div className="flex-1" />

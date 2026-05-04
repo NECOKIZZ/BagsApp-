@@ -1,7 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router";
-import { ArrowLeft, Copy, Check } from "lucide-react";
+import { ArrowLeft, Copy, Check, Loader2, AlertCircle } from "lucide-react";
 import { getTokenMetaByMint, shortMint, SOL_MINT } from "../../lib/jupiter";
+import { fetchTokenMetrics } from "../../lib/api";
+
+const METRICS_POLL_MS = 30_000;
 
 type TokenViewModel = {
   id: string;
@@ -83,6 +86,8 @@ export function TokenDetailPage() {
   const [metaSymbol, setMetaSymbol] = useState<string | null>(null);
   const [metaLogo, setMetaLogo] = useState<string | null>(null);
   const [metrics, setMetrics] = useState<LiveMetrics | null>(null);
+  const [metricsLoading, setMetricsLoading] = useState(true);
+  const [metricsError, setMetricsError] = useState<string | null>(null);
 
   const rawId = (tokenId ?? "").trim();
 
@@ -108,25 +113,47 @@ export function TokenDetailPage() {
   }, [rawId]);
 
   useEffect(() => {
-    let cancelled = false;
     if (!rawId) return;
     const mint = rawId.toLowerCase() === "sol" ? SOL_MINT : rawId;
-    void fetch(`/api/token/${encodeURIComponent(mint)}/metrics`)
-      .then((r) => (r.ok ? r.json() : null))
-      .then((data) => {
-        if (cancelled || !data) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    const load = async (initial: boolean): Promise<void> => {
+      if (cancelled) return;
+      if (initial) setMetricsLoading(true);
+      try {
+        const data = await fetchTokenMetrics(mint);
+        if (cancelled) return;
         setMetrics({
-          marketCapUsd: typeof data.marketCapUsd === "number" ? data.marketCapUsd : null,
-          priceUsd: typeof data.priceUsd === "number" ? data.priceUsd : null,
-          volume24hUsd: typeof data.volume24hUsd === "number" ? data.volume24hUsd : null,
-          liquidityUsd: typeof data.liquidityUsd === "number" ? data.liquidityUsd : null,
-          holders: typeof data.holders === "number" ? data.holders : null,
-          score: typeof data.score === "number" ? data.score : null,
+          marketCapUsd: data.marketCapUsd,
+          priceUsd: data.priceUsd,
+          volume24hUsd: data.volume24hUsd,
+          liquidityUsd: data.liquidityUsd,
+          holders: data.holders,
+          score: data.score,
         });
-      })
-      .catch(() => undefined);
+        setMetricsError(null);
+      } catch (e) {
+        if (cancelled) return;
+        setMetricsError(e instanceof Error ? e.message : "Failed to load metrics");
+      } finally {
+        if (!cancelled && initial) setMetricsLoading(false);
+      }
+    };
+
+    void load(true);
+    const schedule = (): void => {
+      timer = setTimeout(() => {
+        if (cancelled) return;
+        if (!document.hidden) void load(false);
+        schedule();
+      }, METRICS_POLL_MS);
+    };
+    schedule();
+
     return () => {
       cancelled = true;
+      if (timer) clearTimeout(timer);
     };
   }, [rawId]);
 
@@ -183,6 +210,24 @@ export function TokenDetailPage() {
           <ArrowLeft className="w-5 h-5 text-gray-900" />
         </button>
         <h1 className="text-sm font-bold text-gray-900">Token Details</h1>
+        <div className="ml-auto flex items-center gap-1.5 text-[11px] font-semibold tracking-wider uppercase">
+          {metricsLoading ? (
+            <span className="flex items-center gap-1 text-gray-500">
+              <Loader2 className="w-3 h-3 animate-spin" />
+              Loading
+            </span>
+          ) : metricsError ? (
+            <span className="flex items-center gap-1 text-red-500" title={metricsError}>
+              <AlertCircle className="w-3 h-3" />
+              Offline
+            </span>
+          ) : (
+            <span className="flex items-center gap-1 text-green-600">
+              <span className="h-1.5 w-1.5 rounded-full bg-green-500 animate-pulse" />
+              Live
+            </span>
+          )}
+        </div>
       </div>
 
       <div className="flex-1 overflow-y-auto px-3 md:px-5 py-6 md:py-8">

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
-import { Link, useLocation, useNavigate } from "react-router";
+import { useLocation, useNavigate } from "react-router";
 import { Coins, Upload, Twitter, Globe, Plus, X, User } from "lucide-react";
+import { NavButtons } from "../components/NavButtons";
 import { getPhantom, hasAnySolanaWallet, shortAddress } from "../../lib/phantom";
 import { requestWalletNonce, verifyWalletSignature, logoutWalletSession } from "../../lib/api";
 import { runBagsLaunch, stepLabel } from "../../lib/bagsLaunch";
@@ -19,6 +20,7 @@ export function TokenizePage() {
   const navigate = useNavigate();
   const narrative = location.state?.narrative || "New narrative";
   const suggestedNameFromState: string | undefined = location.state?.suggestedName;
+  const tweetIdFromState: string | null = location.state?.tweetId ?? null;
 
   const [tokenName, setTokenName] = useState(suggestedNameFromState ?? "");
   const [ticker, setTicker] = useState(
@@ -192,6 +194,7 @@ export function TokenizePage() {
           ticker: ticker.trim(),
           liquiditySol: liquidity,
           imageUrl: imageUrl.trim() || undefined,
+          tweetId: tweetIdFromState,
         },
         { walletAddress, authToken, setWalletAddress, setAuthToken },
         (s) => setLaunchStep(stepLabel[s]),
@@ -202,7 +205,9 @@ export function TokenizePage() {
           ? `Launched! View on Bags: ${result.mintUrl}`
           : "Launch saved.",
       );
-      setTimeout(() => navigate("/"), 1500);
+      // Prefer redirecting to the new token's detail page; fall back to feed.
+      const redirectTo = result.tokenMint ? `/token/${result.tokenMint}` : "/";
+      setTimeout(() => navigate(redirectTo), 1500);
     } catch (e) {
       setErrorMsg(e instanceof Error ? e.message : "Launch failed");
       setLaunchStep("");
@@ -242,55 +247,7 @@ export function TokenizePage() {
     <div className="flex flex-col h-full bg-[#05070B]">
       {/* Top Bar */}
       <div className="flex shrink-0 items-center gap-3 border-b border-[#1a1f2e]/80 bg-[#05070B]/80 backdrop-blur-xl px-4 py-4 z-20">
-        {/* Desktop: centered absolute nav */}
-        <div className="absolute inset-x-0 hidden sm:flex justify-center pointer-events-none">
-          <div className="flex items-center gap-2 pointer-events-auto">
-            <Link
-              to="/"
-              className={`px-5 py-2 text-sm font-bold tracking-widest rounded-lg transition-all ${
-                location.pathname === "/"
-                  ? "bg-[#00FFA3] text-black shadow-[0_0_20px_rgba(0,255,163,0.35)] scale-105"
-                  : "bg-[#0B0F17] text-[#8b92a8] border border-[#1a1f2e] hover:border-[#242b3d] hover:text-white hover:shadow-[0_0_10px_rgba(255,255,255,0.05)]"
-              }`}
-            >
-              FEED
-            </Link>
-            <Link
-              to="/profile"
-              className={`px-5 py-2 text-sm font-bold tracking-widest rounded-lg transition-all ${
-                location.pathname === "/profile"
-                  ? "bg-[#00FFA3] text-black shadow-[0_0_20px_rgba(0,255,163,0.35)] scale-105"
-                  : "bg-[#0B0F17] text-[#8b92a8] border border-[#1a1f2e] hover:border-[#242b3d] hover:text-white hover:shadow-[0_0_10px_rgba(255,255,255,0.05)]"
-              }`}
-            >
-              PORTFOLIO
-            </Link>
-          </div>
-        </div>
-
-        {/* Mobile: inline compact nav */}
-        <div className="flex sm:hidden items-center gap-1.5">
-          <Link
-            to="/"
-            className={`px-2 py-1 text-[10px] font-bold tracking-widest rounded-md transition-all ${
-              location.pathname === "/"
-                ? "bg-[#00FFA3] text-black shadow-[0_0_12px_rgba(0,255,163,0.35)] scale-105"
-                : "bg-[#0B0F17] text-[#8b92a8] border border-[#1a1f2e] hover:border-[#242b3d] hover:text-white"
-            }`}
-          >
-            FEED
-          </Link>
-          <Link
-            to="/profile"
-            className={`px-2 py-1 text-[10px] font-bold tracking-widest rounded-md transition-all ${
-              location.pathname === "/profile"
-                ? "bg-[#00FFA3] text-black shadow-[0_0_12px_rgba(0,255,163,0.35)] scale-105"
-                : "bg-[#0B0F17] text-[#8b92a8] border border-[#1a1f2e] hover:border-[#242b3d] hover:text-white"
-            }`}
-          >
-            PORTFOLIO
-          </Link>
-        </div>
+        <NavButtons />
         <div className="flex-1" />
         <div className="flex items-center gap-2">
           {!walletAddress ? (
