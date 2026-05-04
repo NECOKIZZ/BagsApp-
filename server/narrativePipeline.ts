@@ -188,6 +188,10 @@ async function searchAndScoreTokens(
 
   // Limit how many candidate searches we fire so a chatty AI doesn't burn API quota.
   const top = candidates.slice(0, MAX_CANDIDATES_TO_SEARCH);
+  console.log(
+    `[NarrativePipeline] tweet ${tweet_id} candidates:`,
+    top.map((c) => `${c.name || c.ticker} (${c.match_score})`).join(", ") || "none",
+  );
 
   let firstCall = true;
   for (const cand of top) {
@@ -199,6 +203,7 @@ async function searchAndScoreTokens(
     firstCall = false;
 
     const results = await bagsSearchTokens(q);
+    console.log(`[NarrativePipeline]   bags search "${q}" → ${results.length} results`);
     const aiScore = Math.max(0, Math.min(100, Number(cand.match_score) || 0));
 
     for (const r of results) {
