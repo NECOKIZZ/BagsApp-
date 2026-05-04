@@ -16,17 +16,45 @@ const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY || "",
 });
 
-/** Shape both Claude and Gemini are asked to return. */
+/**
+ * Shape both Claude and Gemini are asked to return.
+ *
+ * `search_terms` are short queries (1-3 words each) we'll feed into Bags' search.
+ * They should be a mix of:
+ *   - Explicit token names/tickers if the tweet names any (highest weight).
+ *   - Thematic keywords that capture the narrative even if no token is named
+ *     (e.g. "AI agent", "RWA", "memecoin", "Solana DeFi").
+ * The goal is to surface tokens on Bags that ALIGN with the tweet, not just ones
+ * the tweet literally mentions.
+ */
 type NarrativeExtraction = {
   narrative: string;
-  tokens: Array<{ name: string; ticker: string; match_score: number }>;
+  search_terms: Array<{ term: string; weight: number; reason?: string }>;
 };
 
 const SYSTEM_PROMPT =
-  "You are a crypto narrative expert. Analyze the tweet and identify the core narrative and any mentioned tokens.";
+  "You are a crypto narrative expert. You analyze tweets to identify their core theme and produce search queries that will surface aligned Solana tokens from a token catalog.";
 
 const USER_PROMPT = (content: string): string =>
-  `Analyze this tweet: "${content}"\n\nReturn JSON only (no markdown fences): { "narrative": "...", "tokens": [{ "name": "...", "ticker": "...", "match_score": 0-100 }] }`;
+  `Tweet: "${content}"
+
+Your job:
+1. Identify the core narrative/theme in one short sentence.
+2. Produce 3-5 SEARCH TERMS (1-3 words each) that we'll use to find tokens on Bags that align with this tweet's vibe.
+   - If specific tokens are explicitly named, list them FIRST with weight 90-100.
+   - Otherwise, list thematic keywords: categories, narrative tags, related concepts.
+   - Each term must be a plausible token-name search query, not a full sentence.
+   - Order by relevance, highest weight first.
+   - 'reason' is a brief note on why this term aligns.
+3. If the tweet is generic chatter with no usable theme (e.g. just "gm"), return an empty search_terms array.
+
+Return JSON only (no markdown fences):
+{
+  "narrative": "...",
+  "search_terms": [
+    { "term": "AI agent", "weight": 85, "reason": "tweet is about AI agents in crypto" }
+  ]
+}`;
 
 /** Strip ```json fences if a model wrapped its output. */
 function stripJsonFences(text: string): string {
@@ -151,65 +179,59 @@ function pickStr(o: unknown, ...keys: string[]): string | null {
   return null;
 }
 
+type StoredMatch = {
+  tweet_id: string;
+  token_mint: string;
+  token_name: string | null;
+  token_ticker: string | null;
+  match_score: number;
+  score: number;
+};
+
 /**
- * Search Bags for each AI-suggested token name, dedupe by mint, score, take top N.
- * Score is the AI's confidence (0-100) for the candidate that surfaced this match.
+ * Run each AI search term through Bags, dedupe by mint, take top N by score.
+ * A token's score is the AI's weight on the FIRST term that surfaced it
+ * (terms are ordered most-relevant-first, so the first hit is the best match).
  */
 async function searchAndScoreTokens(
   tweet_id: string,
-  candidates: NarrativeExtraction["tokens"],
-): Promise<
-  Array<{
-    tweet_id: string;
-    token_mint: string;
-    token_name: string | null;
-    token_ticker: string | null;
-    match_score: number;
-    score: number;
-  }>
-> {
+  searchTerms: NarrativeExtraction["search_terms"],
+): Promise<StoredMatch[]> {
   if (!bagsConfigured()) {
     console.warn("[NarrativePipeline] BAGS_API_KEY not set — skipping token search.");
     return [];
   }
-  if (!candidates || candidates.length === 0) return [];
+  if (!searchTerms || searchTerms.length === 0) {
+    console.log(`[NarrativePipeline] tweet ${tweet_id}: AI returned no search terms.`);
+    return [];
+  }
 
-  const seen = new Map<
-    string,
-    {
-      tweet_id: string;
-      token_mint: string;
-      token_name: string | null;
-      token_ticker: string | null;
-      match_score: number;
-      score: number;
-    }
-  >();
+  const seen = new Map<string, StoredMatch>();
 
-  // Limit how many candidate searches we fire so a chatty AI doesn't burn API quota.
-  const top = candidates.slice(0, MAX_CANDIDATES_TO_SEARCH);
+  // Limit how many term searches we fire so a chatty AI doesn't burn API quota.
+  const top = searchTerms.slice(0, MAX_CANDIDATES_TO_SEARCH);
   console.log(
-    `[NarrativePipeline] tweet ${tweet_id} candidates:`,
-    top.map((c) => `${c.name || c.ticker} (${c.match_score})`).join(", ") || "none",
+    `[NarrativePipeline] tweet ${tweet_id} terms:`,
+    top.map((t) => `"${t.term}" (${t.weight})`).join(", "),
   );
 
   let firstCall = true;
-  for (const cand of top) {
-    const q = (cand.name || cand.ticker || "").trim();
+  for (const t of top) {
+    const q = (t.term || "").trim();
     if (!q) continue;
 
-    // Pace Bags calls so we don't burst the API on tweets with many candidates.
+    // Pace Bags calls so we don't burst the API on tweets with many terms.
     if (!firstCall) await sleep(BAGS_SEARCH_DELAY_MS);
     firstCall = false;
 
     const results = await bagsSearchTokens(q);
     console.log(`[NarrativePipeline]   bags search "${q}" → ${results.length} results`);
-    const aiScore = Math.max(0, Math.min(100, Number(cand.match_score) || 0));
+    const aiScore = Math.max(0, Math.min(100, Number(t.weight) || 0));
 
     for (const r of results) {
       const mint = pickStr(r, "tokenMint", "token_mint", "mint");
       if (!mint) continue;
-      // First match for this mint wins; later candidates don't overwrite.
+      // First match for this mint wins (terms are ordered by relevance).
       if (seen.has(mint)) continue;
       seen.set(mint, {
         tweet_id,
@@ -247,7 +269,7 @@ export async function runNarrativePipeline({
     }
 
     // 2. Match the AI's candidate tokens against the Bags catalog.
-    const matches = await searchAndScoreTokens(tweet_id, result.tokens ?? []);
+    const matches = await searchAndScoreTokens(tweet_id, result.search_terms ?? []);
 
     // 3. Store the top matches so the feed UI can render them.
     //    ignoreDuplicates so we don't clobber rows from earlier tweets that
