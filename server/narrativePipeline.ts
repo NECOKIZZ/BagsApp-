@@ -1,6 +1,16 @@
 
 import Anthropic from "@anthropic-ai/sdk";
 import { supabase } from "./supabaseClient";
+import { bagsConfigured, bagsSearchTokens } from "./bagsClient";
+
+// How many of the AI's candidate token names we actually search on Bags.
+// Lower = fewer Bags calls per tweet. 3 covers most useful cases.
+const MAX_CANDIDATES_TO_SEARCH = 3;
+const MAX_TOKENS_TO_STORE = 10;
+// Delay between Bags search calls within a single tweet (be a polite client).
+const BAGS_SEARCH_DELAY_MS = 250;
+
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY || "",
@@ -130,6 +140,88 @@ async function extractNarrativeConcepts(
   return await extractWithGemini(content);
 }
 
+/** Pull a string from any of the candidate keys; defensive for Bags' inconsistent shape. */
+function pickStr(o: unknown, ...keys: string[]): string | null {
+  if (!o || typeof o !== "object") return null;
+  const obj = o as Record<string, unknown>;
+  for (const k of keys) {
+    const v = obj[k];
+    if (typeof v === "string" && v.trim()) return v.trim();
+  }
+  return null;
+}
+
+/**
+ * Search Bags for each AI-suggested token name, dedupe by mint, score, take top N.
+ * Score is the AI's confidence (0-100) for the candidate that surfaced this match.
+ */
+async function searchAndScoreTokens(
+  tweet_id: string,
+  candidates: NarrativeExtraction["tokens"],
+): Promise<
+  Array<{
+    tweet_id: string;
+    token_mint: string;
+    token_name: string | null;
+    token_ticker: string | null;
+    match_score: number;
+    score: number;
+  }>
+> {
+  if (!bagsConfigured()) {
+    console.warn("[NarrativePipeline] BAGS_API_KEY not set — skipping token search.");
+    return [];
+  }
+  if (!candidates || candidates.length === 0) return [];
+
+  const seen = new Map<
+    string,
+    {
+      tweet_id: string;
+      token_mint: string;
+      token_name: string | null;
+      token_ticker: string | null;
+      match_score: number;
+      score: number;
+    }
+  >();
+
+  // Limit how many candidate searches we fire so a chatty AI doesn't burn API quota.
+  const top = candidates.slice(0, MAX_CANDIDATES_TO_SEARCH);
+
+  let firstCall = true;
+  for (const cand of top) {
+    const q = (cand.name || cand.ticker || "").trim();
+    if (!q) continue;
+
+    // Pace Bags calls so we don't burst the API on tweets with many candidates.
+    if (!firstCall) await sleep(BAGS_SEARCH_DELAY_MS);
+    firstCall = false;
+
+    const results = await bagsSearchTokens(q);
+    const aiScore = Math.max(0, Math.min(100, Number(cand.match_score) || 0));
+
+    for (const r of results) {
+      const mint = pickStr(r, "tokenMint", "token_mint", "mint");
+      if (!mint) continue;
+      // First match for this mint wins; later candidates don't overwrite.
+      if (seen.has(mint)) continue;
+      seen.set(mint, {
+        tweet_id,
+        token_mint: mint,
+        token_name: pickStr(r, "name", "tokenName"),
+        token_ticker: pickStr(r, "symbol", "ticker", "tokenTicker"),
+        match_score: aiScore,
+        score: aiScore,
+      });
+    }
+  }
+
+  return Array.from(seen.values())
+    .sort((a, b) => b.match_score - a.match_score)
+    .slice(0, MAX_TOKENS_TO_STORE);
+}
+
 export async function runNarrativePipeline({
   tweet_id,
   content,
@@ -139,9 +231,9 @@ export async function runNarrativePipeline({
 }) {
   try {
     const result = await extractNarrativeConcepts(content);
-    if (!result) return; // Silent exit if credits are empty
+    if (!result) return; // Silent exit if no provider available
 
-    // Update the tweet with narrative if we got a result
+    // 1. Save the narrative summary on the tweet.
     if (result.narrative) {
       await supabase
         .from("tweets")
@@ -149,8 +241,24 @@ export async function runNarrativePipeline({
         .eq("tweet_id", tweet_id);
     }
 
-    // Process tokens... (rest of your logic)
-    console.log(`[NarrativePipeline] Processed tweet ${tweet_id}`);
+    // 2. Match the AI's candidate tokens against the Bags catalog.
+    const matches = await searchAndScoreTokens(tweet_id, result.tokens ?? []);
+
+    // 3. Store the top matches so the feed UI can render them.
+    //    ignoreDuplicates so we don't clobber rows from earlier tweets that
+    //    already mentioned the same mint (token_mint has a UNIQUE constraint).
+    if (matches.length > 0) {
+      const { error: upsertErr } = await supabase
+        .from("narrative_tokens")
+        .upsert(matches, { onConflict: "token_mint", ignoreDuplicates: true });
+      if (upsertErr) {
+        console.warn(`[NarrativePipeline] narrative_tokens upsert error:`, upsertErr);
+      }
+    }
+
+    console.log(
+      `[NarrativePipeline] Processed tweet ${tweet_id}: ${matches.length} tokens stored`,
+    );
   } catch (err) {
     // Only log real errors, not the credit warning we handled above
     if (!(err instanceof Error && err.message.includes("credit balance"))) {
