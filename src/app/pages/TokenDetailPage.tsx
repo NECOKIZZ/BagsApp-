@@ -204,29 +204,40 @@ export function TokenDetailPage() {
   };
 
   return (
-    <div className="flex flex-col h-full bg-black">
-      <div className="flex items-center gap-3 px-4 md:px-5 py-3 bg-white border-b border-gray-200 shadow-sm">
-        <button onClick={() => navigate(-1)} className="p-1 hover:bg-gray-100 rounded-lg transition-colors">
-          <ArrowLeft className="w-5 h-5 text-gray-900" />
-        </button>
-        <h1 className="text-sm font-bold text-gray-900">Token Details</h1>
-        <div className="ml-auto flex items-center gap-1.5 text-[11px] font-semibold tracking-wider uppercase">
-          {metricsLoading ? (
-            <span className="flex items-center gap-1 text-gray-500">
-              <Loader2 className="w-3 h-3 animate-spin" />
-              Loading
-            </span>
-          ) : metricsError ? (
-            <span className="flex items-center gap-1 text-red-500" title={metricsError}>
-              <AlertCircle className="w-3 h-3" />
-              Offline
-            </span>
-          ) : (
-            <span className="flex items-center gap-1 text-green-600">
-              <span className="h-1.5 w-1.5 rounded-full bg-green-500 animate-pulse" />
-              Live
-            </span>
-          )}
+    <div className="flex flex-col h-full bg-[#05070B]">
+      {/* Top Bar */}
+      <div className="shrink-0 border-b border-[#1a1f2e]/80 bg-[#05070B]/80 backdrop-blur-xl z-20">
+        <div className="max-w-[1280px] mx-auto flex items-center gap-3 px-4 py-4">
+          <button onClick={() => navigate(-1)} className="flex items-center justify-center w-10 h-10 rounded-full border border-[#1a1f2e] bg-[#0B0F17] transition-all hover:scale-110 hover:border-[#00FFA3]/50">
+            <ArrowLeft className="w-5 h-5 text-white" />
+          </button>
+          
+          {/* App Branding */}
+          <div className="flex shrink-0 items-center gap-4 mr-2">
+            <div className="flex items-center justify-center h-12 w-12 md:h-[54px] md:w-[54px]">
+              <img src="/Delphi.svg" alt="Delphi Logo" className="h-full w-full object-contain" />
+            </div>
+            <span className="text-xl tracking-widest text-white mt-1" style={{ fontFamily: '"Press Start 2P", system-ui' }}>DELPHI</span>
+          </div>
+
+          <div className="ml-auto flex items-center gap-1.5 text-[11px] font-semibold tracking-wider uppercase btn-font">
+            {metricsLoading ? (
+              <span className="flex items-center gap-1 text-[#5a6078]">
+                <Loader2 className="w-3 h-3 animate-spin" />
+                Loading
+              </span>
+            ) : metricsError ? (
+              <span className="flex items-center gap-1 text-red-500" title={metricsError}>
+                <AlertCircle className="w-3 h-3" />
+                Offline
+              </span>
+            ) : (
+              <span className="flex items-center gap-1 text-[#00FFA3]">
+                <span className="h-1.5 w-1.5 rounded-full bg-[#00FFA3] animate-pulse" />
+                Live
+              </span>
+            )}
+          </div>
         </div>
       </div>
 
@@ -241,8 +252,8 @@ export function TokenDetailPage() {
             </div>
           </div>
 
-          <h2 className="text-3xl md:text-4xl font-bold text-white text-center mb-2">{resolvedName}</h2>
-          <p className="text-lg md:text-xl text-gray-400 text-center mb-8">${resolvedSymbol}</p>
+          <h2 className="text-3xl md:text-4xl font-bold text-white text-center mb-2" style={{ fontFamily: '"Clash Display", sans-serif' }}>{resolvedName}</h2>
+          <p className="text-lg md:text-xl text-gray-400 text-center mb-8 btn-font tracking-widest uppercase">${resolvedSymbol}</p>
 
           <div className="relative mb-6">
             <div className="absolute -inset-0.5 bg-gradient-to-r from-gray-600/20 via-gray-400/20 to-gray-600/20 rounded-2xl blur-sm"></div>
@@ -323,8 +334,8 @@ export function TokenDetailPage() {
           </div>
 
           <div className="flex gap-2 md:gap-3">
-            <button className="flex-1 px-4 py-2 text-sm font-bold bg-[#4ade80] text-white rounded-lg hover:bg-[#22c55e] transition-all shadow-[0_4px_14px_0_rgba(74,222,128,0.5)] active:scale-95">Buy</button>
-            <button className="flex-1 px-4 py-2 text-sm font-bold bg-[#ef4444] text-white rounded-lg hover:bg-[#dc2626] transition-all shadow-[0_4px_14px_0_rgba(239,68,68,0.5)] active:scale-95">Sell</button>
+            <button className="btn-font flex-1 px-4 py-2 text-sm font-bold bg-[#00FFA3] text-black rounded-lg hover:bg-[#33ffb5] transition-all shadow-[0_4px_14px_0_rgba(0,255,163,0.3)] active:scale-95">Buy</button>
+            <button className="btn-font flex-1 px-4 py-2 text-sm font-bold bg-[#ef4444] text-white rounded-lg hover:bg-[#dc2626] transition-all shadow-[0_4px_14px_0_rgba(239,68,68,0.3)] active:scale-95">Sell</button>
           </div>
         </div>
       </div>

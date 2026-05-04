@@ -63,13 +63,10 @@ export function MarketTerminal({ tweets, narrative }: MarketTerminalProps) {
       <div className="absolute top-0 right-0 w-24 h-24 bg-[#00FFA3]/5 rounded-full blur-2xl pointer-events-none" />
 
       {/* Header */}
-      <div className="shrink-0 bg-[#05070B]/90 backdrop-blur-md border-b border-[#1a1f2e] p-3 flex items-center gap-2">
-        <div className="flex items-center justify-center w-6 h-6 rounded-md bg-[#00FFA3]/10 border border-[#00FFA3]/20">
-          <TrendingUp size={14} className="text-[#00FFA3]" />
-        </div>
+      <div className="shrink-0 bg-[#05070B]/90 backdrop-blur-md border-b border-[#1a1f2e] p-3 flex items-center justify-center">
         <div className="min-w-0">
-          <h2 className="font-bold text-white text-base tracking-tight truncate">
-            {narrative ? "Top 10 Tokens" : "Market Terminal"}
+          <h2 className="text-white text-sm tracking-widest uppercase truncate" style={{ fontFamily: '"Press Start 2P", system-ui' }}>
+            TERMINAL
           </h2>
         </div>
       </div>
@@ -110,7 +107,7 @@ export function MarketTerminal({ tweets, narrative }: MarketTerminalProps) {
       </div>
 
       {/* Token List */}
-      <div className="flex-1 min-h-0 overflow-y-auto">
+      <div className="flex-1 min-h-0 overflow-y-auto no-scrollbar">
         {loading ? (
           <div className="flex items-center justify-center h-32 text-[#5a6078] text-xs animate-pulse">
             Syncing Terminal...
@@ -161,7 +158,7 @@ export function MarketTerminal({ tweets, narrative }: MarketTerminalProps) {
                   href={`https://jup.ag/swap/SOL-${token.mint}`}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="inline-flex items-center justify-center px-3 py-1 rounded bg-[#00FFA3]/10 border border-[#00FFA3]/20 text-[#00FFA3] text-[10px] font-bold hover:bg-[#00FFA3] hover:text-black transition-all"
+                  className="btn-font inline-flex items-center justify-center px-3 py-1 rounded bg-[#00FFA3]/10 border border-[#00FFA3]/20 text-[#00FFA3] text-[10px] font-bold hover:bg-[#00FFA3] hover:text-black transition-all"
                 >
                   BUY
                 </a>

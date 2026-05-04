@@ -112,43 +112,58 @@ export function TokensHeldPage() {
   const totalValue = holdings.reduce((sum, holding) => sum + holding.value, 0);
 
   return (
-    <div className="flex flex-col h-full bg-black">
+    <div className="flex flex-col h-full bg-[#05070B]">
       {/* Top Bar */}
-      <div className="flex items-center gap-3 px-4 md:px-5 py-3 bg-white border-b border-gray-200 shadow-sm">
-        <button
-          onClick={() => navigate("/profile")}
-          className="p-1 hover:bg-gray-100 rounded-lg transition-colors"
-        >
-          <ArrowLeft className="w-5 h-5 text-gray-900" />
-        </button>
-        <h1 className="text-sm font-bold text-gray-900">
-          Tokens Held
-        </h1>
+      <div className="shrink-0 border-b border-[#1a1f2e]/80 bg-[#05070B]/80 backdrop-blur-xl z-20">
+        <div className="max-w-[1280px] mx-auto flex items-center gap-3 px-4 py-4">
+          <button
+            onClick={() => navigate("/profile")}
+            className="flex items-center justify-center w-10 h-10 rounded-full border border-[#1a1f2e] bg-[#0B0F17] transition-all hover:scale-110 hover:border-[#00FFA3]/50"
+          >
+            <ArrowLeft className="w-5 h-5 text-white" />
+          </button>
+          
+          {/* App Branding */}
+          <div className="flex shrink-0 items-center gap-4 mr-2">
+            <div className="flex items-center justify-center h-12 w-12 md:h-[54px] md:w-[54px]">
+              <img src="/Delphi.svg" alt="Delphi Logo" className="h-full w-full object-contain" />
+            </div>
+            <span className="text-xl tracking-widest text-white mt-1" style={{ fontFamily: '"Press Start 2P", system-ui' }}>DELPHI</span>
+          </div>
+
+          <div className="ml-auto">
+            <h1 className="btn-font text-sm font-bold text-white tracking-widest uppercase">
+              Tokens Held
+            </h1>
+          </div>
+        </div>
       </div>
 
       {/* Content */}
       <div className="flex-1 overflow-y-auto px-3 md:px-5 py-4 md:py-6">
-        {/* Summary Card */}
-        <div className="bg-white border border-gray-200 rounded-2xl p-4 md:p-5 mb-4 md:mb-6 shadow-lg">
-          <div className="flex items-center justify-between mb-3">
-            <div>
-              <div className="text-xs text-gray-600 mb-1 font-medium">
-                Total Portfolio Value
+        <div className="max-w-[1280px] mx-auto">
+          {/* Summary Card */}
+          <div className="bg-[#0B0F17]/80 border border-[#1a1f2e] rounded-2xl p-4 md:p-5 mb-4 md:mb-6 backdrop-blur-sm relative overflow-hidden">
+            <div className="absolute top-0 right-0 w-32 h-32 bg-[#00FFA3]/5 rounded-full blur-3xl pointer-events-none" />
+            <div className="flex items-center justify-between mb-3 relative">
+              <div>
+                <div className="text-[10px] text-[#5a6078] mb-1 font-bold uppercase tracking-widest">
+                  Total Portfolio Value
+                </div>
+                <div className="text-2xl md:text-3xl font-bold text-white" style={{ fontFamily: '"Clash Display", sans-serif' }}>
+                  ${totalValue.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                </div>
               </div>
-              <div className="text-2xl md:text-3xl font-bold text-gray-900">
-                ${totalValue.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-              </div>
-            </div>
-            <div className="text-right">
-              <div className="text-xs text-gray-600 mb-1 font-medium">
-                Total Tokens
-              </div>
-              <div className="text-2xl md:text-3xl font-bold text-gray-900">
-                {holdings.length}
+              <div className="text-right">
+                <div className="text-[10px] text-[#5a6078] mb-1 font-bold uppercase tracking-widest">
+                  Total Tokens
+                </div>
+                <div className="text-2xl md:text-3xl font-bold text-white" style={{ fontFamily: '"Clash Display", sans-serif' }}>
+                  {holdings.length}
+                </div>
               </div>
             </div>
           </div>
-        </div>
 
         {/* Holdings List */}
         <div className="space-y-3 md:space-y-4">
@@ -233,5 +248,6 @@ export function TokensHeldPage() {
         </div>
       </div>
     </div>
-  );
+  </div>
+);
 }

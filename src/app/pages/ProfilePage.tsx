@@ -385,7 +385,16 @@ export function ProfilePage() {
   return (
     <div className="relative flex h-full min-h-0 flex-col">
       {/* Top Bar */}
-      <div className="flex shrink-0 items-center gap-3 border-b border-[#1a1f2e]/80 bg-[#05070B]/80 backdrop-blur-xl px-4 py-4 z-20">
+      <div className="shrink-0 border-b border-[#1a1f2e]/80 bg-[#05070B]/80 backdrop-blur-xl z-20">
+        <div className="max-w-[1280px] mx-auto flex items-center gap-3 px-4 py-4">
+        {/* App Branding */}
+        <div className="flex shrink-0 items-center gap-4 mr-2">
+          <div className="flex items-center justify-center h-12 w-12 md:h-[54px] md:w-[54px]">
+            <img src="/Delphi.svg" alt="Delphi Logo" className="h-full w-full object-contain" />
+          </div>
+          <span className="text-xl tracking-widest text-white mt-1" style={{ fontFamily: '"Press Start 2P", system-ui' }}>DELPHI</span>
+        </div>
+        
         <NavButtons />
         <div className="flex-1" />
         <div className="flex items-center gap-2">
@@ -406,7 +415,7 @@ export function ProfilePage() {
                 className="hidden items-center gap-1.5 rounded-lg border border-[#1a1f2e] bg-[#0B0F17] px-3 py-1.5 md:flex hover:border-[#242b3d] transition-colors"
               >
                 <span className="text-xs text-[#5a6078]">Wallet:</span>
-                <span className="text-sm font-bold text-white">{shortAddress(walletAddress)}</span>
+                <span className="text-sm font-bold text-white font-mono">{shortAddress(walletAddress)}</span>
               </button>
               <button
                 type="button"
@@ -428,6 +437,7 @@ export function ProfilePage() {
           )}
         </div>
       </div>
+    </div>
 
       {isCopied && (
         <div className="shrink-0 border-b border-[#00FFA3]/30 bg-[#00FFA3]/10 px-4 py-2 text-sm text-[#00FFA3]">

@@ -186,7 +186,16 @@ export function FeedPage() {
   return (
     <div className="relative flex h-full min-h-0 flex-col">
       {/* Top Bar */}
-      <div className="flex shrink-0 items-center gap-3 border-b border-[#1a1f2e]/80 bg-[#05070B]/80 backdrop-blur-xl px-4 py-4 z-20">
+      <div className="shrink-0 border-b border-[#1a1f2e]/80 bg-[#05070B]/80 backdrop-blur-xl z-20">
+        <div className="max-w-[1280px] mx-auto flex items-center gap-3 px-4 py-4">
+        {/* App Branding */}
+        <div className="flex shrink-0 items-center gap-4 mr-2">
+          <div className="flex items-center justify-center h-12 w-12 md:h-[54px] md:w-[54px]">
+            <img src="/Delphi.svg" alt="Delphi Logo" className="h-full w-full object-contain" />
+          </div>
+          <span className="text-xl tracking-widest text-white mt-1" style={{ fontFamily: '"Press Start 2P", system-ui' }}>DELPHI</span>
+        </div>
+
         {/* Refresh */}
         <button
           type="button"
@@ -237,6 +246,7 @@ export function FeedPage() {
           )}
         </div>
       </div>
+    </div>
 
       {notice ? (
         <div className="shrink-0 border-b border-[#00d4ff]/30 bg-[#00d4ff]/10 px-4 py-2 text-sm text-[#00d4ff]">
@@ -264,10 +274,11 @@ export function FeedPage() {
         </div>
       ) : null}
 
-      {/* Main content: fixed-height left aside + scrollable right column */}
-      <div className="flex-1 min-h-0 flex gap-4 p-4">
-        {/* LEFT: Market Terminal — fills the viewport height beneath the top bar */}
-        <aside className="hidden md:flex md:flex-col w-[33%] lg:w-[25%] shrink-0 h-full min-h-0">
+      {/* Main content: centered container with max-width */}
+      <div className="flex-1 min-h-0 flex justify-center">
+        <div className="w-full max-w-[1280px] flex gap-6 p-4">
+        {/* LEFT: Market Terminal — fixed width to prevent squishing */}
+        <aside className="hidden md:flex md:flex-col w-[450px] shrink-0 h-full min-h-0">
           <MarketTerminal
             tweets={visibleTweets}
             narrative={selectedNarrative}
@@ -275,7 +286,7 @@ export function FeedPage() {
         </aside>
 
         {/* RIGHT: Signal Feed (the only scrollable area) */}
-        <div className="flex-1 min-w-0 overflow-y-auto">
+        <div className="flex-1 min-w-0 overflow-y-auto no-scrollbar">
           <div className="flex flex-col gap-4">
             {/* Futuristic Header Card */}
             <div className="rounded-xl border border-[#1a1f2e] bg-[#0B0F17]/80 backdrop-blur-sm p-5 relative overflow-hidden">
@@ -285,12 +296,8 @@ export function FeedPage() {
 
               <div className="relative flex flex-col md:flex-row md:items-start md:justify-between gap-4">
                 <div className="flex-1">
-                  <div className="flex items-center gap-2 mb-2">
-                    <TrendingUp className="h-4 w-4 text-[#00FFA3]" />
-                    <span className="text-[10px] font-bold uppercase tracking-widest text-[#00FFA3]">Market Feed</span>
-                  </div>
-                  <h1 className="text-3xl md:text-5xl font-extrabold text-white mb-2 leading-tight">
-                    Turn tweets into tokens
+                  <h1 className="text-3xl md:text-5xl font-extrabold text-white mb-2 leading-tight" style={{ fontFamily: '"Clash Display", sans-serif' }}>
+                    Turn <span className="text-[#00FFA3]">tweets</span> into <span className="text-[#00FFA3]">tokens</span>
                   </h1>
                   <p className="text-sm text-[#8b92a8] max-w-xl leading-relaxed">
                     Spot narratives before they blow up. Every post here is a potential market — select a tweet and launch it as a tradable token on Bags in seconds.
@@ -381,5 +388,6 @@ export function FeedPage() {
         </div>
       </div>
     </div>
-  );
+  </div>
+);
 }

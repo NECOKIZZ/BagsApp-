@@ -19,7 +19,7 @@
   --color-text-warning: #f59e0b;
   --color-background-warning: rgba(245, 158, 11, 0.08);
   --color-text-danger: #ef4444;
-  --font-sans: "Bricolage Grotesque", system-ui, sans-serif;
+  --font-sans: "Geist", system-ui, sans-serif;
   --border-radius-md: 8px;
   --border-radius-lg: 12px;
   --background: #05070B;
@@ -99,7 +99,7 @@
 }
 
 @theme inline {
-  --font-sans: "Bricolage Grotesque", system-ui, sans-serif;
+  --font-sans: "Geist", system-ui, sans-serif;
   --font-display: "Space Grotesk", "Bricolage Grotesque", system-ui, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, "Cascadia Code", "Source Code Pro", Menlo, Consolas, monospace;
   --color-background: var(--background);
@@ -142,6 +142,16 @@
   --color-sidebar-ring: var(--sidebar-ring);
 }
 
+@layer utilities {
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+  .no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+}
+
 @layer base {
   * {
     @apply border-border outline-ring/50;
@@ -149,7 +159,7 @@
 
   body {
     @apply bg-background text-foreground;
-    font-family: 'Bricolage Grotesque', sans-serif;
+    font-family: 'Geist', sans-serif;
   }
 
   /**
@@ -194,7 +204,7 @@
   button,
   a[role="button"],
   .btn-font {
-    font-family: 'Space Grotesk', 'Bricolage Grotesque', system-ui, sans-serif;
+    font-family: 'Clash Display', system-ui, sans-serif;
     font-size: var(--text-sm);
     font-weight: 600;
     letter-spacing: 0.08em;

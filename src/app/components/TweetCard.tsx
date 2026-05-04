@@ -211,20 +211,10 @@ export function TweetCard({
         <div className="absolute top-0 left-0 right-0 h-[2px] bg-[#00FFA3] shadow-[0_0_12px_rgba(0,255,163,0.6)]" />
       )}
 
-      {tweetType === "comment" ? (
-        <div className="flex items-center gap-2 px-4 pt-3 text-zinc-500">
-          <span className="h-5 w-px bg-zinc-600" />
-          <MessageCircle className="h-3.5 w-3.5" />
-        </div>
-      ) : null}
+
 
       <div className="p-4">
-        {tweetType === "repost" ? (
-          <div className="mb-2 flex items-center gap-1.5 text-xs text-emerald-300/85">
-            <GitBranch className="h-3 w-3" />
-            <span>@{handleUsername} reposted</span>
-          </div>
-        ) : null}
+
 
         <div className="flex items-start justify-between">
           <div className="flex items-center gap-3">
@@ -234,29 +224,26 @@ export function TweetCard({
             >
               {avatar}
             </div>
-            <div className="flex items-center gap-1.5 flex-wrap">
-              <span className="font-bold text-white text-[15px]">{name}</span>
+            <div className="flex flex-col -space-y-0.5">
+              <div className="flex items-center gap-1.5">
+                <span className="font-bold text-white text-[15px]">{name}</span>
+                <span className="text-zinc-600 text-xs">·</span>
+                <span className="text-zinc-500 text-xs">{time}</span>
+              </div>
               <a
                 href={`https://x.com/${handleUsername}`}
                 target="_blank"
                 rel="noopener noreferrer"
                 onClick={(e) => e.stopPropagation()}
-                className="text-zinc-500 text-[15px] hover:text-zinc-300 underline underline-offset-2"
+                className="text-zinc-500 text-[13px] hover:text-zinc-300"
               >
                 {handle}
               </a>
-              <span className="text-zinc-600">·</span>
-              <span className="text-zinc-500 text-sm">{time}</span>
             </div>
           </div>
 
           <div className="flex items-center gap-2 flex-shrink-0">
-            {typeIndicator ? (
-              <span className={`inline-flex items-center gap-1 rounded-md border px-2 py-1 text-[11px] font-semibold ${typeIndicator.className}`}>
-                {typeIndicator.icon}
-                {typeIndicator.label}
-              </span>
-            ) : null}
+
             {tweetId && handle ? (
               <a
                 href={`https://x.com/${handleUsername}/status/${tweetId}`}
@@ -274,7 +261,7 @@ export function TweetCard({
 
         <div className="my-3 border-t border-[#1a1f2e]/70" />
 
-        <div className="text-[15px] leading-normal text-zinc-200 mb-3 whitespace-pre-wrap">{tweetBody}</div>
+        <div className="text-[15px] leading-normal text-zinc-200 mb-3 whitespace-pre-wrap" style={{ fontFamily: '"Geist", sans-serif' }}>{tweetBody}</div>
 
         {linkPreview && <TweetLinkPreview preview={linkPreview} />}
 

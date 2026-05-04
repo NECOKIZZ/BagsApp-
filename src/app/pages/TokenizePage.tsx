@@ -246,42 +246,52 @@ export function TokenizePage() {
   return (
     <div className="flex flex-col h-full bg-[#05070B]">
       {/* Top Bar */}
-      <div className="flex shrink-0 items-center gap-3 border-b border-[#1a1f2e]/80 bg-[#05070B]/80 backdrop-blur-xl px-4 py-4 z-20">
-        <NavButtons />
-        <div className="flex-1" />
-        <div className="flex items-center gap-2">
-          {!walletAddress ? (
-            <button
-              type="button"
-              onClick={() => void handleConnectWallet()}
-              className="rounded-lg bg-[#00FFA3] px-3 py-1.5 text-xs font-bold text-black shadow-[0_0_15px_rgba(0,255,163,0.25)] transition-all hover:scale-105 hover:bg-[#33ffb5] hover:shadow-[0_0_20px_rgba(0,255,163,0.4)] md:px-4 md:py-2 md:text-sm"
-            >
-              Connect wallet
-            </button>
-          ) : (
-            <>
-              <div className="hidden items-center gap-1.5 rounded-lg border border-[#1a1f2e] bg-[#0B0F17] px-3 py-1.5 md:flex">
-                <span className="text-xs text-[#5a6078]">Wallet:</span>
-                <span className="text-sm font-bold text-white">{shortAddress(walletAddress)}</span>
-              </div>
+      <div className="shrink-0 border-b border-[#1a1f2e]/80 bg-[#05070B]/80 backdrop-blur-xl z-20">
+        <div className="max-w-[1280px] mx-auto flex items-center gap-3 px-4 py-4">
+          {/* App Branding */}
+          <div className="flex shrink-0 items-center gap-4 mr-2">
+            <div className="flex items-center justify-center h-12 w-12 md:h-[54px] md:w-[54px]">
+              <img src="/Delphi.svg" alt="Delphi Logo" className="h-full w-full object-contain" />
+            </div>
+            <span className="text-xl tracking-widest text-white mt-1" style={{ fontFamily: '"Press Start 2P", system-ui' }}>DELPHI</span>
+          </div>
+          
+          <NavButtons />
+          <div className="flex-1" />
+          <div className="flex items-center gap-2">
+            {!walletAddress ? (
               <button
                 type="button"
-                onClick={() => void handleDisconnectWallet()}
-                className="rounded-lg border border-[#1a1f2e] bg-[#0B0F17] px-3 py-1.5 text-xs font-bold text-[#8b92a8] transition-colors hover:bg-[#151a26] hover:text-white md:px-4 md:py-2 md:text-sm"
-                title="Disconnect wallet"
+                onClick={() => void handleConnectWallet()}
+                className="btn-font rounded-lg bg-[#00FFA3] px-3 py-1.5 text-xs font-bold text-black shadow-[0_0_15px_rgba(0,255,163,0.25)] transition-all hover:scale-105 hover:bg-[#33ffb5] hover:shadow-[0_0_20px_rgba(0,255,163,0.4)] md:px-4 md:py-2 md:text-sm"
               >
-                Disconnect
+                Connect wallet
               </button>
-              <button
-                type="button"
-                onClick={() => void handleDisconnectWallet()}
-                className="flex h-8 w-8 items-center justify-center rounded-full border border-[#1a1f2e] bg-[#0B0F17] transition-all hover:scale-110 hover:border-[#00FFA3]/50 hover:shadow-[0_0_10px_rgba(0,255,163,0.2)] md:h-9 md:w-9"
-                title="Disconnect wallet"
-              >
-                <User className="h-4 w-4 text-[#8b92a8] md:h-5 md:w-5" />
-              </button>
-            </>
-          )}
+            ) : (
+              <>
+                <div className="hidden items-center gap-1.5 rounded-lg border border-[#1a1f2e] bg-[#0B0F17] px-3 py-1.5 md:flex">
+                  <span className="text-xs text-[#5a6078]">Wallet:</span>
+                  <span className="text-sm font-bold text-white font-mono">{shortAddress(walletAddress)}</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => void handleDisconnectWallet()}
+                  className="btn-font rounded-lg border border-[#1a1f2e] bg-[#0B0F17] px-3 py-1.5 text-xs font-bold text-[#8b92a8] transition-colors hover:bg-[#151a26] hover:text-white md:px-4 md:py-2 md:text-sm"
+                  title="Disconnect wallet"
+                >
+                  Disconnect
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void handleDisconnectWallet()}
+                  className="flex h-8 w-8 items-center justify-center rounded-full border border-[#1a1f2e] bg-[#0B0F17] transition-all hover:scale-110 hover:border-[#00FFA3]/50 hover:shadow-[0_0_10px_rgba(0,255,163,0.2)] md:h-9 md:w-9"
+                  title="Disconnect wallet"
+                >
+                  <User className="h-4 w-4 text-[#8b92a8] md:h-5 md:w-5" />
+                </button>
+              </>
+            )}
+          </div>
         </div>
       </div>
 
@@ -295,7 +305,7 @@ export function TokenizePage() {
                 <Coins className="w-5 h-5 md:w-6 md:h-6 text-[#00FFA3]" />
               </div>
               <div className="flex-1 min-w-0">
-                <div className="text-sm md:text-base font-bold text-white">
+                <div className="text-sm md:text-base font-bold text-white uppercase tracking-wider" style={{ fontFamily: '"Clash Display", sans-serif' }}>
                   Tokenizing narrative
                 </div>
                 <div className="text-xs md:text-sm text-[#5a6078] truncate">
@@ -643,14 +653,14 @@ export function TokenizePage() {
             <div className="flex flex-col md:flex-row gap-2 md:gap-3 pt-2">
               <button
                 onClick={() => navigate("/")}
-                className="w-full md:flex-1 px-4 py-2 text-xs font-bold uppercase tracking-wider border border-[#1a1f2e] rounded-lg text-[#8b92a8] hover:bg-[#151a26] transition-all active:translate-y-[1px]"
+                className="btn-font w-full md:flex-1 px-4 py-2 text-xs font-bold uppercase tracking-wider border border-[#1a1f2e] rounded-lg text-[#8b92a8] hover:bg-[#151a26] transition-all active:translate-y-[1px]"
               >
                 Cancel
               </button>
               <button
                 onClick={() => void handleLaunch()}
                 disabled={!canLaunch}
-                className="w-full md:flex-1 px-6 py-2 text-xs font-bold uppercase tracking-wider rounded-lg bg-[#00FFA3] text-black hover:bg-[#33ffb5] transition-all active:translate-y-[1px] disabled:opacity-50 disabled:cursor-not-allowed"
+                className="btn-font w-full md:flex-1 px-6 py-2 text-xs font-bold uppercase tracking-wider rounded-lg bg-[#00FFA3] text-black hover:bg-[#33ffb5] transition-all active:translate-y-[1px] disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {launching ? "Launching…" : "Launch Token"}
               </button>

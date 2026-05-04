@@ -13,14 +13,14 @@ export function NavButtons() {
   const isProfile = location.pathname === "/profile";
 
   const desktopBase =
-    "px-5 py-2 text-sm font-bold tracking-widest rounded-lg transition-all";
+    "btn-font px-5 py-2 text-sm font-bold tracking-widest rounded-lg transition-all";
   const desktopActive =
     "bg-[#00FFA3] text-black shadow-[0_0_20px_rgba(0,255,163,0.35)] scale-105";
   const desktopIdle =
     "bg-[#0B0F17] text-[#8b92a8] border border-[#1a1f2e] hover:border-[#242b3d] hover:text-white hover:shadow-[0_0_10px_rgba(255,255,255,0.05)]";
 
   const mobileBase =
-    "px-2 py-1 text-[10px] font-bold tracking-widest rounded-md transition-all";
+    "btn-font px-2 py-1 text-[10px] font-bold tracking-widest rounded-md transition-all";
   const mobileActive =
     "bg-[#00FFA3] text-black shadow-[0_0_12px_rgba(0,255,163,0.35)] scale-105";
   const mobileIdle =
