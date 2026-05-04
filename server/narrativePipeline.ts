@@ -1,14 +1,16 @@
 
 import Anthropic from "@anthropic-ai/sdk";
 import { supabase } from "./supabaseClient";
-import { bagsConfigured, bagsSearchTokens } from "./bagsClient";
 
-// How many of the AI's candidate token names we actually search on Bags.
-// Lower = fewer Bags calls per tweet. 3 covers most useful cases.
+// How many of the AI's candidate token terms we actually search.
 const MAX_CANDIDATES_TO_SEARCH = 4;
+// Cap how many results we keep per term — Jupiter can return 50+, most are noise.
+const MAX_RESULTS_PER_TERM = 5;
 const MAX_TOKENS_TO_STORE = 10;
-// Delay between Bags search calls within a single tweet (be a polite client).
-const BAGS_SEARCH_DELAY_MS = 250;
+// Delay between search calls (be a polite client).
+const SEARCH_DELAY_MS = 250;
+
+const JUPITER_SEARCH_URL = "https://lite-api.jup.ag/tokens/v2/search";
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
@@ -240,19 +242,58 @@ type StoredMatch = {
   score: number;
 };
 
+/** Normalized result shape so the matching loop is provider-agnostic. */
+type SearchHit = { mint: string; name: string | null; symbol: string; quality: number };
+
 /**
- * Run each AI search term through Bags, dedupe by mint, take top N by score.
- * A token's score is the AI's weight on the FIRST term that surfaced it
- * (terms are ordered most-relevant-first, so the first hit is the best match).
+ * Search Jupiter's lite token-search API for a query string.
+ * Returns up to MAX_RESULTS_PER_TERM candidates, ranked by Jupiter's organic score.
+ * Skips obvious junk: unverified tokens, tokens with no name/symbol.
+ *
+ * Bags has no public search endpoint — Jupiter is the only viable source for
+ * name-based Solana token discovery.
+ */
+async function jupiterSearchTokens(query: string): Promise<SearchHit[]> {
+  try {
+    const url = `${JUPITER_SEARCH_URL}?query=${encodeURIComponent(query)}`;
+    const res = await fetch(url, { method: "GET" });
+    if (!res.ok) {
+      console.warn(`[jupiter-search] "${query}" → HTTP ${res.status}`);
+      return [];
+    }
+    const data = (await res.json()) as Array<Record<string, unknown>>;
+    if (!Array.isArray(data)) return [];
+
+    return data
+      .map((r) => {
+        const mint = pickStr(r, "id", "mint", "address");
+        const name = pickStr(r, "name");
+        const symbol = pickStr(r, "symbol", "ticker");
+        const verified = r.isVerified === true;
+        const organic = Number(r.organicScore ?? 0);
+        if (!mint || !symbol) return null;
+        // quality nudges verified tokens up; otherwise use organicScore.
+        const quality = (verified ? 50 : 0) + Math.min(50, Math.max(0, organic));
+        return { mint, name, symbol, quality };
+      })
+      .filter((x): x is SearchHit => x !== null)
+      .sort((a, b) => b.quality - a.quality)
+      .slice(0, MAX_RESULTS_PER_TERM);
+  } catch (e) {
+    console.warn(`[jupiter-search] "${query}" failed:`, e);
+    return [];
+  }
+}
+
+/**
+ * Run each AI search term through Jupiter, dedupe by mint, take top N by score.
+ * A token's score is the AI's weight for the FIRST term that surfaced it,
+ * boosted slightly by Jupiter's quality signal.
  */
 async function searchAndScoreTokens(
   tweet_id: string,
   searchTerms: NarrativeExtraction["search_terms"],
 ): Promise<StoredMatch[]> {
-  if (!bagsConfigured()) {
-    console.warn("[NarrativePipeline] BAGS_API_KEY not set — skipping token search.");
-    return [];
-  }
   if (!searchTerms || searchTerms.length === 0) {
     console.log(`[NarrativePipeline] tweet ${tweet_id}: AI returned no search terms.`);
     return [];
@@ -260,7 +301,7 @@ async function searchAndScoreTokens(
 
   const seen = new Map<string, StoredMatch>();
 
-  // Limit how many term searches we fire so a chatty AI doesn't burn API quota.
+  // Limit how many term searches we fire so a chatty AI doesn't burn quota.
   const top = searchTerms.slice(0, MAX_CANDIDATES_TO_SEARCH);
   console.log(
     `[NarrativePipeline] tweet ${tweet_id} terms:`,
@@ -272,26 +313,25 @@ async function searchAndScoreTokens(
     const q = (t.term || "").trim();
     if (!q) continue;
 
-    // Pace Bags calls so we don't burst the API on tweets with many terms.
-    if (!firstCall) await sleep(BAGS_SEARCH_DELAY_MS);
+    if (!firstCall) await sleep(SEARCH_DELAY_MS);
     firstCall = false;
 
-    const results = await bagsSearchTokens(q);
-    console.log(`[NarrativePipeline]   bags search "${q}" → ${results.length} results`);
+    const hits = await jupiterSearchTokens(q);
+    console.log(`[NarrativePipeline]   jupiter "${q}" → ${hits.length} results`);
     const aiScore = Math.max(0, Math.min(100, Number(t.weight) || 0));
 
-    for (const r of results) {
-      const mint = pickStr(r, "tokenMint", "token_mint", "mint");
-      if (!mint) continue;
+    for (const h of hits) {
       // First match for this mint wins (terms are ordered by relevance).
-      if (seen.has(mint)) continue;
-      seen.set(mint, {
+      if (seen.has(h.mint)) continue;
+      // Final score = AI confidence (0-100) gently nudged by token quality (0-100, /4).
+      const finalScore = Math.min(100, Math.round(aiScore + h.quality / 4));
+      seen.set(h.mint, {
         tweet_id,
-        token_mint: mint,
-        token_name: pickStr(r, "name", "tokenName"),
-        token_ticker: pickStr(r, "symbol", "ticker", "tokenTicker"),
-        match_score: aiScore,
-        score: aiScore,
+        token_mint: h.mint,
+        token_name: h.name,
+        token_ticker: h.symbol,
+        match_score: finalScore,
+        score: finalScore,
       });
     }
   }
