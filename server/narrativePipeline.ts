@@ -342,6 +342,7 @@ type StoredMatch = {
   token_ticker: string | null;
   match_score: number;
   score: number;
+  is_on_bags: boolean;
 };
 
 /** Normalized result shape so the matching loop is provider-agnostic. */
@@ -391,12 +392,14 @@ async function jupiterSearchTokens(query: string): Promise<SearchHit[]> {
 }
 
 /**
- * Dual-source token search:
- *   Source 1 — Bags feed cache (fresh tokens, name+symbol match, no validation needed)
- *   Source 2 — Jupiter + Bags mint filter (fallback for terms with < 3 feed cache hits)
+ * Three-step token search:
+ *   Step 1 — Bags-confirmed tokens (feed cache + Jupiter filtered by Bags mints)
+ *            → is_on_bags = true, priority slots
+ *   Step 2 — Jupiter-only tokens (not on Bags) fill remaining slots up to 10
+ *            → is_on_bags = false
+ *   Step 3 — Rank all 10 by score (AI weight + quality boost)
  *
- * Dedupes by tokenMint. Feed cache hits get a +10 quality boost.
- * Takes top 10 across all terms and stores in narrative_tokens.
+ * Dedupes by tokenMint across all sources.
  */
 async function searchAndScoreTokens(
   tweet_id: string,
@@ -407,7 +410,9 @@ async function searchAndScoreTokens(
     return [];
   }
 
-  const seen = new Map<string, StoredMatch>();
+  // ── Phase 1: Collect Bags-confirmed and Jupiter-only tokens ──
+  const bagsMatches = new Map<string, StoredMatch>();
+  const jupiterOnlyMatches = new Map<string, StoredMatch & { rawQuality: number }>();
 
   // Limit how many term searches we fire so a chatty AI doesn't burn quota.
   const top = searchTerms.slice(0, MAX_CANDIDATES_TO_SEARCH);
@@ -434,58 +439,94 @@ async function searchAndScoreTokens(
       );
     }
     for (const h of feedHits) {
-      if (seen.has(h.mint)) continue;
-      // Feed cache tokens get a +10 boost since they're confirmed fresh Bags launches.
+      if (bagsMatches.has(h.mint)) continue;
       const finalScore = Math.min(100, Math.round(aiScore + (h.quality + 10) / 4));
-      seen.set(h.mint, {
+      bagsMatches.set(h.mint, {
         tweet_id,
         token_mint: h.mint,
         token_name: h.name,
         token_ticker: h.symbol,
         match_score: finalScore,
         score: finalScore,
+        is_on_bags: true,
       });
     }
 
-    // ── Source 2: Jupiter fallback (only if feed cache returned < FEED_CACHE_MIN_HITS)
-    if (feedHits.length < FEED_CACHE_MIN_HITS) {
-      // Lazy-load the mint set on first Jupiter call.
-      if (!bagsMints) {
-        bagsMints = await getBagsMintSet();
-        if (bagsMints.size === 0) {
-          console.warn(`[NarrativePipeline] Bags pool list empty — Jupiter fallback disabled.`);
-        }
+    // ── Source 2: Jupiter (always search; split into Bags-confirmed and Jupiter-only)
+    // Lazy-load the mint set on first Jupiter call.
+    if (!bagsMints) {
+      bagsMints = await getBagsMintSet();
+      if (bagsMints.size === 0) {
+        console.warn(`[NarrativePipeline] Bags pool list empty — all Jupiter hits will be Jupiter-only.`);
       }
+    }
 
-      if (bagsMints && bagsMints.size > 0) {
-        if (!firstJupiterCall) await sleep(SEARCH_DELAY_MS);
-        firstJupiterCall = false;
+    if (!firstJupiterCall) await sleep(SEARCH_DELAY_MS);
+    firstJupiterCall = false;
 
-        const hits = await jupiterSearchTokens(q);
-        const onBags = hits.filter((h) => bagsMints!.has(h.mint));
-        console.log(
-          `[NarrativePipeline] jupiter fallback "${q}" → ${hits.length} results, ${onBags.length} on Bags`,
-        );
+    const hits = await jupiterSearchTokens(q);
+    const onBags = bagsMints.size > 0 ? hits.filter((h) => bagsMints!.has(h.mint)) : [];
+    const offBags = bagsMints.size > 0 ? hits.filter((h) => !bagsMints!.has(h.mint)) : hits;
 
-        for (const h of onBags) {
-          if (seen.has(h.mint)) continue;
-          const finalScore = Math.min(100, Math.round(aiScore + h.quality / 4));
-          seen.set(h.mint, {
-            tweet_id,
-            token_mint: h.mint,
-            token_name: h.name,
-            token_ticker: h.symbol,
-            match_score: finalScore,
-            score: finalScore,
-          });
-        }
-      }
+    console.log(
+      `[NarrativePipeline] jupiter "${q}" → ${hits.length} total, ${onBags.length} on Bags, ${offBags.length} off Bags`,
+    );
+
+    for (const h of onBags) {
+      if (bagsMatches.has(h.mint)) continue;
+      const finalScore = Math.min(100, Math.round(aiScore + h.quality / 4));
+      bagsMatches.set(h.mint, {
+        tweet_id,
+        token_mint: h.mint,
+        token_name: h.name,
+        token_ticker: h.symbol,
+        match_score: finalScore,
+        score: finalScore,
+        is_on_bags: true,
+      });
+    }
+
+    for (const h of offBags) {
+      if (bagsMatches.has(h.mint) || jupiterOnlyMatches.has(h.mint)) continue;
+      const finalScore = Math.min(100, Math.round(aiScore + h.quality / 4));
+      jupiterOnlyMatches.set(h.mint, {
+        tweet_id,
+        token_mint: h.mint,
+        token_name: h.name,
+        token_ticker: h.symbol,
+        match_score: finalScore,
+        score: finalScore,
+        is_on_bags: false,
+        rawQuality: h.quality,
+      });
     }
   }
 
-  return Array.from(seen.values())
-    .sort((a, b) => b.match_score - a.match_score)
-    .slice(0, MAX_TOKENS_TO_STORE);
+  // ── Phase 2: Assemble final list ─────────────────────────────
+  // Start with Bags-confirmed, sorted by score descending.
+  const bagsList = Array.from(bagsMatches.values()).sort((a, b) => b.match_score - a.match_score);
+
+  // If we have fewer than 10 Bags tokens, fill remaining slots with Jupiter-only.
+  let final: StoredMatch[] = [...bagsList];
+  if (final.length < MAX_TOKENS_TO_STORE) {
+    const needed = MAX_TOKENS_TO_STORE - final.length;
+    const jupiterList = Array.from(jupiterOnlyMatches.values())
+      .sort((a, b) => b.match_score - a.match_score)
+      .slice(0, needed)
+      .map(({ rawQuality: _, ...match }) => match); // strip rawQuality
+    final.push(...jupiterList);
+  }
+
+  // Re-sort everything by score so Bags tokens naturally bubble to the top.
+  final = final.sort((a, b) => b.match_score - a.match_score).slice(0, MAX_TOKENS_TO_STORE);
+
+  const bagsCount = final.filter((m) => m.is_on_bags).length;
+  const jupiterCount = final.length - bagsCount;
+  console.log(
+    `[NarrativePipeline] Processed tweet ${tweet_id}: ${bagsCount} on Bags + ${jupiterCount} Jupiter = ${final.length} tokens stored`,
+  );
+
+  return final;
 }
 
 
@@ -522,10 +563,6 @@ export async function runNarrativePipeline({
         console.warn(`[NarrativePipeline] narrative_tokens upsert error:`, upsertErr);
       }
     }
-
-    console.log(
-      `[NarrativePipeline] Processed tweet ${tweet_id}: ${matches.length} tokens stored`,
-    );
   } catch (err) {
     // Only log real errors, not the credit warning we handled above
     if (!(err instanceof Error && err.message.includes("credit balance"))) {

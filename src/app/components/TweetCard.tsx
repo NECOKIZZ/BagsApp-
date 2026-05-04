@@ -31,6 +31,7 @@ export interface Token {
   score: number;
   mint?: string | null;
   age?: string;
+  is_on_bags?: boolean;
 }
 
 export interface TweetCardProps {
@@ -297,6 +298,11 @@ export function TweetCard({
               >
                 <span className="w-1.5 h-1.5 rounded-full bg-current opacity-70" />
                 {token.name}
+                {token.is_on_bags ? (
+                  <span className="ml-0.5 inline-flex items-center rounded-[3px] bg-[#00FFA3]/15 px-1 text-[9px] font-bold text-[#00FFA3] uppercase tracking-wider">
+                    B
+                  </span>
+                ) : null}
               </span>
             ))}
           </div>
@@ -395,6 +401,11 @@ export function TweetCard({
                     >
                       <span className="w-1.5 h-1.5 rounded-full bg-current opacity-70" />
                       {token.name}
+                      {token.is_on_bags ? (
+                        <span className="ml-0.5 inline-flex items-center rounded-[3px] bg-[#00FFA3]/15 px-1 text-[9px] font-bold text-[#00FFA3] uppercase tracking-wider">
+                          B
+                        </span>
+                      ) : null}
                     </span>
                   </div>
                   <div className="flex items-center gap-3 text-xs">

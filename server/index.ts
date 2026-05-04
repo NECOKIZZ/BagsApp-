@@ -644,6 +644,7 @@ app.get("/api/feed", async (req, res) => {
           score: Number(t.score ?? 50),
           mint: t.token_mint ?? null,
           age: toRelativeTime(t.launched_at),
+          is_on_bags: Boolean(t.is_on_bags),
         })),
       };
     });
@@ -1173,6 +1174,7 @@ app.post("/api/launches/:launchId/submit-tx", async (req, res) => {
           current_mcap: initialStats.marketCapUsd ?? null,
           current_price: initialStats.priceUsd ?? null,
           total_volume: initialStats.volume24hUsd ?? null,
+          is_on_bags: true,
         };
         const { error: upsertErr } = await supabase
           .from("narrative_tokens")
