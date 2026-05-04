@@ -5,8 +5,10 @@ import { bagsListAllPools } from "./bagsClient";
 
 // How many of the AI's candidate token terms we actually search.
 const MAX_CANDIDATES_TO_SEARCH = 4;
-// Cap how many results we keep per term — Jupiter can return 50+, most are noise.
-const MAX_RESULTS_PER_TERM = 5;
+// How many Jupiter results we scan per term before filtering against the Bags
+// catalog. Most won't be on Bags, so we take a wide net here. Jupiter caps at
+// 100 by default; 50 keeps response sizes reasonable.
+const MAX_RESULTS_PER_TERM = 50;
 const MAX_TOKENS_TO_STORE = 10;
 // Delay between search calls (be a polite client).
 const SEARCH_DELAY_MS = 250;
@@ -288,6 +290,9 @@ async function jupiterSearchTokens(query: string): Promise<SearchHit[]> {
     const data = (await res.json()) as Array<Record<string, unknown>>;
     if (!Array.isArray(data)) return [];
 
+    // Keep Jupiter's default relevance order. Sorting by verified/organicScore
+    // pushes Bags memecoins (usually unverified, low organic) off the list,
+    // which defeats the whole point of the Bags filter we apply downstream.
     return data
       .map((r) => {
         const mint = pickStr(r, "id", "mint", "address");
@@ -296,12 +301,12 @@ async function jupiterSearchTokens(query: string): Promise<SearchHit[]> {
         const verified = r.isVerified === true;
         const organic = Number(r.organicScore ?? 0);
         if (!mint || !symbol) return null;
-        // quality nudges verified tokens up; otherwise use organicScore.
+        // Quality is kept as a tiebreaker signal for downstream scoring,
+        // but we no longer use it to filter or reorder Jupiter's results.
         const quality = (verified ? 50 : 0) + Math.min(50, Math.max(0, organic));
         return { mint, name, symbol, quality };
       })
       .filter((x): x is SearchHit => x !== null)
-      .sort((a, b) => b.quality - a.quality)
       .slice(0, MAX_RESULTS_PER_TERM);
   } catch (e) {
     console.warn(`[jupiter-search] "${query}" failed:`, e);
