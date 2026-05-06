@@ -15,7 +15,7 @@ export const router = createBrowserRouter([
       { path: "profile", Component: ProfilePage },
       { path: "tokenize", Component: TokenizePage },
       { path: "tokens-held", Component: TokensHeldPage },
-      { path: "token/:tokenId", Component: TokenDetailPage },
+      { path: "token/:mint", Component: TokenDetailPage },
     ],
   },
 ]);

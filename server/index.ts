@@ -672,35 +672,104 @@ app.get("/api/token/:mint/metrics", async (req, res) => {
 
     const out: {
       mint: string;
+      tokenName: string | null;
+      tokenTicker: string | null;
+      isOnBags: boolean;
+      launchedHere: boolean;
+      launchedAt: string | null;
       marketCapUsd: number | null;
       priceUsd: number | null;
       volume24hUsd: number | null;
       liquidityUsd: number | null;
       holders: number | null;
       score: number | null;
+      sourceTweet: {
+        id: string | null;
+        content: string | null;
+        imageUrl: string | null;
+        postedAt: string | null;
+      } | null;
+      creator: {
+        handle: string | null;
+        displayName: string | null;
+        avatarUrl: string | null;
+        followerCount: number | null;
+        score: number | null;
+      } | null;
     } = {
       mint,
+      tokenName: null,
+      tokenTicker: null,
+      isOnBags: false,
+      launchedHere: false,
+      launchedAt: null,
       marketCapUsd: null,
       priceUsd: null,
       volume24hUsd: null,
       liquidityUsd: null,
       holders: null,
       score: null,
+      sourceTweet: null,
+      creator: null,
     };
 
     const { data: row } = await supabase
       .from("narrative_tokens")
-      .select("current_mcap,current_price,total_volume,score")
+      .select(
+        "token_name,token_ticker,is_on_bags,launched_here,launched_at,current_mcap,current_price,total_volume,score,tweet_id",
+      )
       .eq("token_mint", mint)
       .order("updated_at", { ascending: false })
       .limit(1)
       .maybeSingle();
 
     if (row) {
-      out.marketCapUsd = pickNum((row as Record<string, unknown>).current_mcap);
-      out.priceUsd = pickNum((row as Record<string, unknown>).current_price);
-      out.volume24hUsd = pickNum((row as Record<string, unknown>).total_volume);
-      out.score = pickNum((row as Record<string, unknown>).score);
+      const r = row as Record<string, unknown>;
+      out.tokenName = (r.token_name as string | null) ?? null;
+      out.tokenTicker = (r.token_ticker as string | null) ?? null;
+      out.isOnBags = Boolean(r.is_on_bags);
+      out.launchedHere = Boolean(r.launched_here);
+      out.launchedAt = (r.launched_at as string | null) ?? null;
+      out.marketCapUsd = pickNum(r.current_mcap);
+      out.priceUsd = pickNum(r.current_price);
+      out.volume24hUsd = pickNum(r.total_volume);
+      out.score = pickNum(r.score);
+
+      const tweetId = (r.tweet_id as string | null) ?? null;
+      if (tweetId) {
+        const { data: tweet } = await supabase
+          .from("tweets")
+          .select("tweet_id,content,image_url,posted_at,creator_handle")
+          .eq("tweet_id", tweetId)
+          .maybeSingle();
+        if (tweet) {
+          const t = tweet as Record<string, unknown>;
+          out.sourceTweet = {
+            id: (t.tweet_id as string | null) ?? null,
+            content: (t.content as string | null) ?? null,
+            imageUrl: (t.image_url as string | null) ?? null,
+            postedAt: (t.posted_at as string | null) ?? null,
+          };
+          const handle = (t.creator_handle as string | null) ?? null;
+          if (handle) {
+            const { data: creator } = await supabase
+              .from("creators")
+              .select("handle,display_name,avatar_url,follower_count,score")
+              .eq("handle", handle)
+              .maybeSingle();
+            if (creator) {
+              const c = creator as Record<string, unknown>;
+              out.creator = {
+                handle: (c.handle as string | null) ?? null,
+                displayName: (c.display_name as string | null) ?? null,
+                avatarUrl: (c.avatar_url as string | null) ?? null,
+                followerCount: pickNum(c.follower_count),
+                score: pickNum(c.score),
+              };
+            }
+          }
+        }
+      }
     }
 
     if (bagsConfigured()) {

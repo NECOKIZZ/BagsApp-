@@ -75,12 +75,30 @@ export interface TerminalResponse {
 
 export type TokenMetrics = {
   mint: string;
+  tokenName: string | null;
+  tokenTicker: string | null;
+  isOnBags: boolean;
+  launchedHere: boolean;
+  launchedAt: string | null;
   marketCapUsd: number | null;
   priceUsd: number | null;
   volume24hUsd: number | null;
   liquidityUsd: number | null;
   holders: number | null;
   score: number | null;
+  sourceTweet: {
+    id: string | null;
+    content: string | null;
+    imageUrl: string | null;
+    postedAt: string | null;
+  } | null;
+  creator: {
+    handle: string | null;
+    displayName: string | null;
+    avatarUrl: string | null;
+    followerCount: number | null;
+    score: number | null;
+  } | null;
 };
 
 /** Fetch live token metrics for a Solana mint (mcap, price, volume, etc). */

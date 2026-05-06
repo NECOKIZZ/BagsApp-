@@ -1,106 +1,82 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router";
-import { ArrowLeft, Copy, Check, Loader2, AlertCircle } from "lucide-react";
+import {
+  ArrowLeft,
+  Copy,
+  Check,
+  Loader2,
+  AlertCircle,
+  ExternalLink,
+  Sparkles,
+} from "lucide-react";
 import { getTokenMetaByMint, shortMint, SOL_MINT } from "../../lib/jupiter";
-import { fetchTokenMetrics } from "../../lib/api";
+import { fetchTokenMetrics, type TokenMetrics } from "../../lib/api";
 
 const METRICS_POLL_MS = 30_000;
 
-type TokenViewModel = {
-  id: string;
-  icon: string;
-  name: string;
-  ticker: string;
-  contractAddress: string;
-  score: number;
-  marketCap: string;
-  volume24h: string;
-  priceChange24h: number;
-  holders: string;
-  liquidity: string;
-  iconColor: string;
-  iconBg: string;
-  creatorName: string;
-  creatorAddress: string;
-  creatorScore: number;
-  logoURI?: string;
-};
+function formatUsdCompact(n: number | null | undefined): string {
+  if (n == null || !Number.isFinite(n) || n <= 0) return "—";
+  if (n >= 1_000_000_000) return `$${(n / 1_000_000_000).toFixed(2)}B`;
+  if (n >= 1_000_000) return `$${(n / 1_000_000).toFixed(2)}M`;
+  if (n >= 1_000) return `$${(n / 1_000).toFixed(1)}K`;
+  return `$${n.toFixed(0)}`;
+}
 
-type LiveMetrics = {
-  marketCapUsd: number | null;
-  priceUsd: number | null;
-  volume24hUsd: number | null;
-  liquidityUsd: number | null;
-  holders: number | null;
-  score: number | null;
-};
+function formatUsdPrice(n: number | null | undefined): string {
+  if (n == null || !Number.isFinite(n) || n <= 0) return "—";
+  if (n >= 1) return `$${n.toFixed(2)}`;
+  if (n >= 0.01) return `$${n.toFixed(4)}`;
+  return `$${n.toFixed(8).replace(/0+$/, "").replace(/\.$/, "")}`;
+}
 
-const mockTokenData: Record<string, Partial<TokenViewModel>> = {
-  rwasolana: {
-    id: "token_001",
-    icon: "T",
-    name: "RWASOLANA",
-    ticker: "RWAS",
-    contractAddress: "7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU",
-    score: 88,
-    marketCap: "$2.1M",
-    volume24h: "$450K",
-    priceChange24h: 840.5,
-    holders: "12.5K",
-    liquidity: "$890K",
-    iconColor: "#3C3489",
-    iconBg: "#EEEDFE",
-    creatorName: "Murad",
-    creatorAddress: "@murad_m",
-    creatorScore: 92,
-  },
-};
+function formatCount(n: number | null | undefined): string {
+  if (n == null || !Number.isFinite(n)) return "—";
+  return n.toLocaleString("en-US");
+}
 
-function defaultTokenFromId(tokenId: string): TokenViewModel {
-  const upper = tokenId.slice(0, 6).toUpperCase();
-  return {
-    id: `token_${tokenId.slice(0, 6)}`,
-    icon: upper.slice(0, 1) || "T",
-    name: `Token ${shortMint(tokenId)}`,
-    ticker: upper.slice(0, 4) || "TOKEN",
-    contractAddress: tokenId,
-    score: 0,
-    marketCap: "N/A",
-    volume24h: "N/A",
-    priceChange24h: 0,
-    holders: "N/A",
-    liquidity: "N/A",
-    iconColor: "#3C3489",
-    iconBg: "#EEEDFE",
-    creatorName: "Unknown",
-    creatorAddress: "@unknown",
-    creatorScore: 0,
-  };
+function relativeTime(iso: string | null | undefined): string {
+  if (!iso) return "";
+  const ts = Date.parse(iso);
+  if (!Number.isFinite(ts)) return "";
+  const mins = Math.max(0, Math.floor((Date.now() - ts) / 60000));
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
+}
+
+function scoreColor(score: number | null | undefined): string {
+  const s = score ?? 0;
+  if (s >= 80) return "#22c55e";
+  if (s >= 60) return "#5DCAA5";
+  if (s >= 40) return "#EF9F27";
+  if (s >= 20) return "#71717A";
+  return "#ef4444";
+}
+
+function stripTweetTypePrefix(text: string | null | undefined): string {
+  if (!text) return "";
+  return text.replace(/^\[(tweet|repost|quote|comment)\]\s*/i, "");
 }
 
 export function TokenDetailPage() {
   const navigate = useNavigate();
-  const { tokenId } = useParams();
+  const { mint: mintParam } = useParams();
   const [copiedAddress, setCopiedAddress] = useState(false);
   const [metaName, setMetaName] = useState<string | null>(null);
   const [metaSymbol, setMetaSymbol] = useState<string | null>(null);
   const [metaLogo, setMetaLogo] = useState<string | null>(null);
-  const [metrics, setMetrics] = useState<LiveMetrics | null>(null);
+  const [metrics, setMetrics] = useState<TokenMetrics | null>(null);
   const [metricsLoading, setMetricsLoading] = useState(true);
   const [metricsError, setMetricsError] = useState<string | null>(null);
 
-  const rawId = (tokenId ?? "").trim();
-
-  const token = useMemo(() => {
-    const bySlug = mockTokenData[rawId.toLowerCase()];
-    const base = bySlug ? ({ ...defaultTokenFromId(bySlug.contractAddress ?? rawId), ...bySlug } as TokenViewModel) : defaultTokenFromId(rawId);
-    return base;
-  }, [rawId]);
+  const rawId = (mintParam ?? "").trim();
+  const mint = useMemo(() => (rawId.toLowerCase() === "sol" ? SOL_MINT : rawId), [rawId]);
 
   useEffect(() => {
     let cancelled = false;
-    if (!rawId) return;
-    const mint = rawId.toLowerCase() === "sol" ? SOL_MINT : rawId;
+    if (!mint) return;
     void getTokenMetaByMint(mint).then((meta) => {
       if (cancelled || !meta) return;
       setMetaName(meta.name ?? null);
@@ -110,11 +86,10 @@ export function TokenDetailPage() {
     return () => {
       cancelled = true;
     };
-  }, [rawId]);
+  }, [mint]);
 
   useEffect(() => {
-    if (!rawId) return;
-    const mint = rawId.toLowerCase() === "sol" ? SOL_MINT : rawId;
+    if (!mint) return;
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
 
@@ -124,14 +99,7 @@ export function TokenDetailPage() {
       try {
         const data = await fetchTokenMetrics(mint);
         if (cancelled) return;
-        setMetrics({
-          marketCapUsd: data.marketCapUsd,
-          priceUsd: data.priceUsd,
-          volume24hUsd: data.volume24hUsd,
-          liquidityUsd: data.liquidityUsd,
-          holders: data.holders,
-          score: data.score,
-        });
+        setMetrics(data);
         setMetricsError(null);
       } catch (e) {
         if (cancelled) return;
@@ -155,32 +123,36 @@ export function TokenDetailPage() {
       cancelled = true;
       if (timer) clearTimeout(timer);
     };
-  }, [rawId]);
+  }, [mint]);
 
   if (!rawId) {
     return (
-      <div className="flex flex-col h-full bg-black">
-        <div className="flex items-center gap-3 px-4 md:px-5 py-3 bg-white border-b border-gray-200 shadow-sm">
-          <button onClick={() => navigate(-1)} className="p-1 hover:bg-gray-100 rounded-lg transition-colors">
-            <ArrowLeft className="w-5 h-5 text-gray-900" />
+      <div className="flex flex-col h-full bg-[#05070B]">
+        <div className="flex items-center gap-3 px-4 md:px-5 py-3 border-b border-[#1a1f2e]/80">
+          <button onClick={() => navigate(-1)} className="p-1 rounded-lg hover:bg-[#151a26] transition-colors">
+            <ArrowLeft className="w-5 h-5 text-white" />
           </button>
-          <h1 className="text-sm font-bold text-gray-900">Token Details</h1>
+          <h1 className="text-sm font-bold text-white">Token Details</h1>
         </div>
         <div className="flex-1 flex items-center justify-center">
-          <p className="text-gray-400">Token not found</p>
+          <p className="text-[#5a6078]">Token not found</p>
         </div>
       </div>
     );
   }
 
-  const resolvedName = metaName ?? token.name;
-  const resolvedSymbol = metaSymbol ?? token.ticker;
-  const resolvedAddress = token.contractAddress || rawId;
-  const resolvedScore = metrics?.score ?? token.score;
-  const resolvedMarketCap = metrics?.marketCapUsd != null ? `$${metrics.marketCapUsd.toLocaleString("en-US", { maximumFractionDigits: 0 })}` : token.marketCap;
-  const resolvedVol24h = metrics?.volume24hUsd != null ? `$${metrics.volume24hUsd.toLocaleString("en-US", { maximumFractionDigits: 0 })}` : token.volume24h;
-  const resolvedLiquidity = metrics?.liquidityUsd != null ? `$${metrics.liquidityUsd.toLocaleString("en-US", { maximumFractionDigits: 0 })}` : token.liquidity;
-  const resolvedHolders = metrics?.holders != null ? metrics.holders.toLocaleString("en-US") : token.holders;
+  const resolvedName = metrics?.tokenName || metaName || (mint ? `Token ${shortMint(mint)}` : "Token");
+  const resolvedSymbol = metrics?.tokenTicker || metaSymbol || (mint ? mint.slice(0, 4).toUpperCase() : "TOKEN");
+  const resolvedAddress = mint;
+  const resolvedScore = metrics?.score ?? null;
+  const resolvedMarketCap = formatUsdCompact(metrics?.marketCapUsd);
+  const resolvedPrice = formatUsdPrice(metrics?.priceUsd);
+  const resolvedVol24h = formatUsdCompact(metrics?.volume24hUsd);
+  const resolvedLiquidity = formatUsdCompact(metrics?.liquidityUsd);
+  const resolvedHolders = formatCount(metrics?.holders);
+  const creator = metrics?.creator ?? null;
+  const sourceTweet = metrics?.sourceTweet ?? null;
+  const iconLetter = (resolvedSymbol || "T").slice(0, 1).toUpperCase();
 
   const handleCopyAddress = () => {
     const copy = () => {
@@ -243,101 +215,167 @@ export function TokenDetailPage() {
 
       <div className="flex-1 overflow-y-auto px-3 md:px-5 py-6 md:py-8">
         <div className="max-w-2xl mx-auto">
+          {/* Identity */}
           <div className="flex justify-center mb-6">
-            <div
-              className="w-24 h-24 md:w-32 md:h-32 rounded-full flex items-center justify-center text-4xl md:text-5xl font-medium shadow-2xl overflow-hidden"
-              style={{ backgroundColor: token.iconBg, color: token.iconColor }}
-            >
-              {metaLogo ? <img src={metaLogo} alt={resolvedSymbol} className="w-full h-full object-cover" /> : token.icon}
+            <div className="w-24 h-24 md:w-32 md:h-32 rounded-full flex items-center justify-center text-4xl md:text-5xl font-bold shadow-2xl overflow-hidden bg-gradient-to-br from-[#1a1f2e] to-[#0B0F17] border border-[#1a1f2e] text-white">
+              {metaLogo ? (
+                <img src={metaLogo} alt={resolvedSymbol} className="w-full h-full object-cover" />
+              ) : sourceTweet?.imageUrl ? (
+                <img src={sourceTweet.imageUrl} alt={resolvedSymbol} className="w-full h-full object-cover" />
+              ) : (
+                iconLetter
+              )}
             </div>
           </div>
 
           <h2 className="text-3xl md:text-4xl font-bold text-white text-center mb-2" style={{ fontFamily: '"Clash Display", sans-serif' }}>{resolvedName}</h2>
-          <p className="text-lg md:text-xl text-gray-400 text-center mb-8 btn-font tracking-widest uppercase">${resolvedSymbol}</p>
+          <p className="text-lg md:text-xl text-[#8b92a8] text-center mb-2 btn-font tracking-widest uppercase">${resolvedSymbol}</p>
 
-          <div className="relative mb-6">
-            <div className="absolute -inset-0.5 bg-gradient-to-r from-gray-600/20 via-gray-400/20 to-gray-600/20 rounded-2xl blur-sm"></div>
-            <div className="relative bg-black border border-gray-700 rounded-2xl p-4 md:p-5">
-              <div className="flex items-center justify-between">
-                <div>
-                  <div className="text-xs text-gray-500 mb-1 font-medium">Created By</div>
-                  <div className="text-base md:text-lg font-bold text-white mb-0.5">{token.creatorName}</div>
-                  <div className="text-xs md:text-sm text-gray-400">{token.creatorAddress}</div>
-                </div>
-                <div className="text-right">
-                  <div className="text-xs text-gray-500 mb-1 font-medium">Creator Score</div>
-                  <div className="text-2xl md:text-3xl font-bold" style={{ color: token.creatorScore >= 80 ? "#22c55e" : token.creatorScore >= 60 ? "#f97316" : "#ef4444" }}>
-                    {token.creatorScore}
+          {/* Badges */}
+          <div className="flex items-center justify-center gap-2 mb-6 flex-wrap">
+            {metrics?.isOnBags ? (
+              <span className="text-[10px] font-bold uppercase tracking-wider bg-[#00FFA3]/15 text-[#00FFA3] border border-[#00FFA3]/30 px-2 py-1 rounded">On Bags</span>
+            ) : null}
+            {metrics?.launchedHere ? (
+              <span className="text-[10px] font-bold uppercase tracking-wider bg-[#00d4ff]/15 text-[#00d4ff] border border-[#00d4ff]/30 px-2 py-1 rounded inline-flex items-center gap-1">
+                <Sparkles className="w-3 h-3" />
+                Launched on Delphi
+              </span>
+            ) : null}
+            {metrics?.launchedAt ? (
+              <span className="text-[10px] font-bold uppercase tracking-wider bg-[#151a26] text-[#8b92a8] border border-[#1a1f2e] px-2 py-1 rounded">
+                {relativeTime(metrics.launchedAt)}
+              </span>
+            ) : null}
+          </div>
+
+          {/* Source tweet */}
+          {sourceTweet?.id ? (
+            <div className="mb-6 rounded-2xl border border-[#1a1f2e] bg-[#0B0F17]/80 backdrop-blur-sm p-4 md:p-5">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-[10px] font-bold uppercase tracking-wider text-[#5a6078]">Source Tweet</span>
+                {sourceTweet.postedAt ? (
+                  <span className="text-[10px] text-[#5a6078]">{relativeTime(sourceTweet.postedAt)}</span>
+                ) : null}
+              </div>
+              <div className="flex items-start gap-3">
+                {creator?.avatarUrl ? (
+                  <img src={creator.avatarUrl} alt={creator.handle ?? ""} className="w-10 h-10 rounded-full object-cover shrink-0" />
+                ) : (
+                  <div className="w-10 h-10 rounded-full bg-[#151a26] border border-[#1a1f2e] flex items-center justify-center shrink-0">
+                    <span className="text-xs font-bold text-white">
+                      {(creator?.displayName ?? creator?.handle ?? "?").slice(0, 2).toUpperCase()}
+                    </span>
                   </div>
+                )}
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className="text-sm font-bold text-white truncate">{creator?.displayName ?? creator?.handle ?? "Unknown"}</span>
+                    {creator?.handle ? (
+                      <span className="text-xs text-[#5a6078] truncate">@{creator.handle.replace(/^@/, "")}</span>
+                    ) : null}
+                  </div>
+                  <p className="text-sm text-[#cfd6e8] leading-relaxed line-clamp-4 break-words">
+                    {stripTweetTypePrefix(sourceTweet.content)}
+                  </p>
+                  {creator?.score != null ? (
+                    <div className="mt-2 inline-flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-[#5a6078]">
+                      <span>Creator score</span>
+                      <span style={{ color: scoreColor(creator.score) }}>{Math.round(creator.score)}</span>
+                    </div>
+                  ) : null}
                 </div>
               </div>
             </div>
-          </div>
+          ) : null}
 
-          <div className="relative mb-6">
-            <div className="absolute -inset-0.5 bg-gradient-to-r from-gray-600/20 via-gray-400/20 to-gray-600/20 rounded-2xl blur-sm"></div>
-            <div className="relative bg-black border border-gray-700 rounded-2xl p-5 md:p-6">
-              <div className="mb-5">
-                <div className="text-xs text-gray-500 mb-2 font-medium">Contract Address</div>
-                <div className="flex items-center gap-2">
-                  <div className="flex-1 px-3 py-2.5 bg-gray-900 border border-gray-800 rounded-lg">
-                    <p className="text-xs md:text-sm text-white font-mono break-all">{resolvedAddress}</p>
-                  </div>
-                  <button onClick={handleCopyAddress} className="p-2.5 bg-gray-900 border border-gray-800 rounded-lg hover:bg-gray-800 transition-colors">
-                    {copiedAddress ? <Check className="w-5 h-5 text-green-500" /> : <Copy className="w-5 h-5 text-gray-400" />}
-                  </button>
+          {/* Stats */}
+          <div className="rounded-2xl border border-[#1a1f2e] bg-[#0B0F17]/80 backdrop-blur-sm p-5 md:p-6 mb-6">
+            <div className="mb-5">
+              <div className="text-[10px] font-bold uppercase tracking-wider text-[#5a6078] mb-2">Contract Address</div>
+              <div className="flex items-center gap-2">
+                <div className="flex-1 px-3 py-2.5 bg-[#05070B] border border-[#1a1f2e] rounded-lg">
+                  <p className="text-xs md:text-sm text-white font-mono break-all">{resolvedAddress}</p>
                 </div>
+                <button onClick={handleCopyAddress} className="p-2.5 bg-[#05070B] border border-[#1a1f2e] rounded-lg hover:border-[#242b3d] transition-colors" title="Copy address">
+                  {copiedAddress ? <Check className="w-5 h-5 text-[#00FFA3]" /> : <Copy className="w-5 h-5 text-[#8b92a8]" />}
+                </button>
+                <a
+                  href={`https://solscan.io/token/${resolvedAddress}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="p-2.5 bg-[#05070B] border border-[#1a1f2e] rounded-lg hover:border-[#242b3d] transition-colors"
+                  title="View on Solscan"
+                >
+                  <ExternalLink className="w-5 h-5 text-[#8b92a8]" />
+                </a>
               </div>
+            </div>
 
-              <div className="grid grid-cols-2 gap-4">
-                <div className="p-4 bg-gray-900 border border-gray-800 rounded-xl">
-                  <div className="text-xs text-gray-500 mb-2">Token Score</div>
-                  <div className="text-2xl md:text-3xl font-bold" style={{ color: resolvedScore >= 60 ? "#22c55e" : resolvedScore >= 25 ? "#f97316" : "#ef4444" }}>
-                    {resolvedScore}
-                  </div>
-                </div>
-
-                <div className="p-4 bg-gray-900 border border-gray-800 rounded-xl">
-                  <div className="text-xs text-gray-500 mb-2">Token ID</div>
-                  <div className="text-2xl md:text-3xl font-bold text-white">{token.id.replace("token_", "")}</div>
-                </div>
-
-                <div className="p-4 bg-gray-900 border border-gray-800 rounded-xl">
-                  <div className="text-xs text-gray-500 mb-2">Market Cap</div>
-                  <div className="text-xl md:text-2xl font-bold text-white">{resolvedMarketCap}</div>
-                </div>
-
-                <div className="p-4 bg-gray-900 border border-gray-800 rounded-xl">
-                  <div className="text-xs text-gray-500 mb-2">24h Volume</div>
-                  <div className="text-xl md:text-2xl font-bold text-white">{resolvedVol24h}</div>
-                </div>
-
-                <div className="p-4 bg-gray-900 border border-gray-800 rounded-xl">
-                  <div className="text-xs text-gray-500 mb-2">24h Change</div>
-                  <div className={`text-xl md:text-2xl font-bold ${token.priceChange24h >= 0 ? "text-green-500" : "text-red-500"}`}>
-                    {token.priceChange24h >= 0 ? "+" : ""}
-                    {token.priceChange24h}%
-                  </div>
-                </div>
-
-                <div className="p-4 bg-gray-900 border border-gray-800 rounded-xl">
-                  <div className="text-xs text-gray-500 mb-2">Holders</div>
-                  <div className="text-xl md:text-2xl font-bold text-white">{resolvedHolders}</div>
-                </div>
-
-                <div className="col-span-2 p-4 bg-gray-900 border border-gray-800 rounded-xl">
-                  <div className="text-xs text-gray-500 mb-2">Liquidity</div>
-                  <div className="text-xl md:text-2xl font-bold text-white">{resolvedLiquidity}</div>
-                </div>
-              </div>
+            <div className="grid grid-cols-2 gap-3">
+              <StatCell label="Token Score" value={resolvedScore != null ? String(Math.round(resolvedScore)) : "—"} valueColor={scoreColor(resolvedScore)} />
+              <StatCell label="Price" value={resolvedPrice} />
+              <StatCell label="Market Cap" value={resolvedMarketCap} />
+              <StatCell label="24h Volume" value={resolvedVol24h} />
+              <StatCell label="Liquidity" value={resolvedLiquidity} />
+              <StatCell label="Holders" value={resolvedHolders} />
             </div>
           </div>
 
-          <div className="flex gap-2 md:gap-3">
-            <button className="btn-font flex-1 px-4 py-2 text-sm font-bold bg-[#00FFA3] text-black rounded-lg hover:bg-[#33ffb5] transition-all shadow-[0_4px_14px_0_rgba(0,255,163,0.3)] active:scale-95">Buy</button>
-            <button className="btn-font flex-1 px-4 py-2 text-sm font-bold bg-[#ef4444] text-white rounded-lg hover:bg-[#dc2626] transition-all shadow-[0_4px_14px_0_rgba(239,68,68,0.3)] active:scale-95">Sell</button>
+          {/* Actions */}
+          <div className="flex flex-col gap-2 md:gap-3">
+            <div className="flex gap-2 md:gap-3">
+              <a
+                href={`https://jup.ag/swap/SOL-${resolvedAddress}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="btn-font flex-1 px-4 py-2.5 text-sm font-bold uppercase tracking-wider bg-[#00FFA3] text-black rounded-lg hover:bg-[#33ffb5] transition-all shadow-[0_4px_14px_0_rgba(0,255,163,0.3)] active:scale-95 text-center"
+              >
+                Buy on Jupiter
+              </a>
+              <a
+                href={`https://jup.ag/swap/${resolvedAddress}-SOL`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="btn-font flex-1 px-4 py-2.5 text-sm font-bold uppercase tracking-wider bg-[#1a1f2e] text-white border border-[#242b3d] rounded-lg hover:bg-[#242b3d] transition-all active:scale-95 text-center"
+              >
+                Sell on Jupiter
+              </a>
+            </div>
+            {metrics?.isOnBags ? (
+              <a
+                href={`https://bags.fm/${resolvedAddress}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="btn-font px-4 py-2.5 text-xs font-bold uppercase tracking-wider bg-[#0B0F17] text-[#8b92a8] border border-[#1a1f2e] rounded-lg hover:bg-[#151a26] hover:text-white transition-all active:scale-95 text-center inline-flex items-center justify-center gap-1.5"
+              >
+                View on Bags <ExternalLink className="w-3 h-3" />
+              </a>
+            ) : null}
           </div>
         </div>
+      </div>
+    </div>
+  );
+}
+
+function StatCell({
+  label,
+  value,
+  valueColor,
+}: {
+  label: string;
+  value: string;
+  valueColor?: string;
+}) {
+  return (
+    <div className="p-4 bg-[#05070B] border border-[#1a1f2e] rounded-xl">
+      <div className="text-[10px] font-bold uppercase tracking-wider text-[#5a6078] mb-2">{label}</div>
+      <div
+        className="text-xl md:text-2xl font-bold text-white"
+        style={valueColor ? { color: valueColor } : undefined}
+      >
+        {value}
       </div>
     </div>
   );
