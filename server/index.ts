@@ -1909,15 +1909,21 @@ app.post("/api/admin/replay-tweet", async (req, res) => {
       ? body.handle.trim().replace(/^@/, "").toLowerCase()
       : "";
 
-    let query = supabase
-      .from("tweets")
-      .select("tweet_id, content, creator_handle, posted_at, narrative")
-      .order("posted_at", { ascending: false })
-      .limit(1);
-    if (tweetIdInput) query = query.eq("tweet_id", tweetIdInput);
-    else if (handleInput) query = query.ilike("creator_handle", handleInput);
+    // Select narrative defensively — older DBs don't have that column.
+    const baseCols = "tweet_id, content, creator_handle, posted_at";
+    const buildQuery = (cols: string) => {
+      let q = supabase.from("tweets").select(cols)
+        .order("posted_at", { ascending: false })
+        .limit(1);
+      if (tweetIdInput) q = q.eq("tweet_id", tweetIdInput);
+      else if (handleInput) q = q.ilike("creator_handle", handleInput);
+      return q;
+    };
 
-    const { data: tweetRows, error: fetchErr } = await query;
+    let { data: tweetRows, error: fetchErr } = await buildQuery(`${baseCols}, narrative`);
+    if (fetchErr && /narrative.*does not exist/i.test(fetchErr.message)) {
+      ({ data: tweetRows, error: fetchErr } = await buildQuery(baseCols));
+    }
     if (fetchErr) {
       return res.status(500).json({ error: "Tweet lookup failed", detail: fetchErr.message });
     }
