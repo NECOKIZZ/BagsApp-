@@ -2,6 +2,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { supabase } from "./supabaseClient";
 import { bagsListAllPools, bagsFetchFeed, type BagsFeedToken } from "./bagsClient";
+import { calculateScratchScore } from "./scoring";
 
 // How many of the AI's candidate token terms we actually search.
 const MAX_CANDIDATES_TO_SEARCH = 4;
@@ -133,33 +134,38 @@ const anthropic = new Anthropic({
  */
 type NarrativeExtraction = {
   narrative: string;
-  search_terms: Array<{ term: string; weight: number; reason?: string }>;
+  tickers: Array<{ ticker: string; weight: number; reason?: string }>;
+  nouns: Array<{ noun: string; weight: number; reason?: string }>;
 };
 
 const SYSTEM_PROMPT =
-  "You analyze tweets to surface candidate Solana memecoins on Bags.fm. In memecoin culture ANY word can be a token — common verbs, slang, single letters, names, vibes. Do NOT filter for 'crypto relevance'.";
+  "You are a degen Solana memecoin discovery agent. You analyze tweets to extract ticker candidates and noun keywords. In memecoin culture ANY word can be a token — verbs, slang, single letters, names, vibes. Do NOT filter for 'crypto relevance'.";
 
-const USER_PROMPT = (content: string): string =>
+const USER_PROMPT = (content: string, creatorHandle?: string): string =>
   `Tweet: "${content}"
+${creatorHandle ? `Creator: @${creatorHandle}` : ""}
 
 Your job:
-1. Write a 1-sentence narrative summary of what the tweet is about (literal, not crypto-coded).
-2. Produce 4-5 SEARCH TERMS (1-2 words each) that could plausibly exist as a memecoin name on Bags.
-   - Pull standout nouns, verbs, slang, names, vibe-words, hashtags, repeated phrases.
-   - "gm", "going", "trend", "agent", "moon", "am", "grok", "fartcoin" — all valid token names.
-   - If the tweet explicitly names a token (cashtag like $BONK or "BONK is mooning"), list it FIRST with weight 95.
-   - Otherwise extract the 4-5 most distinctive words/phrases from the tweet itself.
-   - Even short tweets like "gm" should produce at least one term: ["gm"].
-   - Single-word terms preferred. 2-word phrases only if they're a clear unit ("AI agent", "to the moon").
-   - Order by how distinctive/searchable each term is. Higher weight = more likely to be a real token someone made.
-   - 'reason' is a brief note (e.g. "main verb of tweet", "noun subject", "named cashtag").
+1. Generate the TOP 5 most probable Solana memecoin tickers that either already exist or could be created based on this tweet.
+   - Think like a degen: consider exact phrases, acronyms, the poster's name combined with keywords, single strong nouns, and any numbers or symbols.
+   - Rank by how likely a memecoin community would actually use them.
+   - Return ONLY the tickers (uppercase, 1-3 words), ranked.
 
-Return JSON only (no markdown fences):
+2. Separately identify ALL nouns in the tweet. Nouns are the highest priority for memecoin naming.
+   - List them separately from tickers so they can be weighted higher in search.
+   - A noun that is also a ticker candidate should appear in both lists.
+   - Identify compound nouns (e.g., "AI agent").
+
+Return JSON only:
 {
-  "narrative": "...",
-  "search_terms": [
-    { "term": "going", "weight": 70, "reason": "main verb, vibe word" },
-    { "term": "trend", "weight": 65, "reason": "noun subject" }
+  "narrative": "1-sentence literal summary of the tweet",
+  "tickers": [
+    { "ticker": "TICKER", "weight": 95, "reason": "main subject" },
+    ...
+  ],
+  "nouns": [
+    { "noun": "noun", "weight": 100, "reason": "primary noun" },
+    ...
   ]
 }`;
 
@@ -171,12 +177,12 @@ function stripJsonFences(text: string): string {
 }
 
 /** Claude 3 Haiku — primary provider when ANTHROPIC_API_KEY has credits. */
-async function extractWithClaude(content: string): Promise<NarrativeExtraction> {
+async function extractWithClaude(content: string, creatorHandle?: string): Promise<NarrativeExtraction> {
   const response = await anthropic.messages.create({
     model: "claude-3-haiku-20240307",
     max_tokens: 1000,
     system: SYSTEM_PROMPT,
-    messages: [{ role: "user", content: USER_PROMPT(content) }],
+    messages: [{ role: "user", content: USER_PROMPT(content, creatorHandle) }],
   });
   const text = response.content[0].type === "text" ? response.content[0].text : "";
   return JSON.parse(stripJsonFences(text)) as NarrativeExtraction;
@@ -197,6 +203,7 @@ async function callGeminiOnce(
   model: string,
   apiKey: string,
   content: string,
+  creatorHandle?: string,
 ): Promise<NarrativeExtraction> {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
     model,
@@ -204,7 +211,7 @@ async function callGeminiOnce(
 
   const body = {
     systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
-    contents: [{ role: "user", parts: [{ text: USER_PROMPT(content) }] }],
+    contents: [{ role: "user", parts: [{ text: USER_PROMPT(content, creatorHandle) }] }],
     generationConfig: {
       responseMimeType: "application/json",
       maxOutputTokens: 1000,
@@ -239,7 +246,7 @@ async function callGeminiOnce(
  * - If retries are exhausted, advances to the next model in GEMINI_MODEL chain.
  * Default chain: gemini-2.5-flash → gemini-2.5-flash-lite.
  */
-async function extractWithGemini(content: string): Promise<NarrativeExtraction> {
+async function extractWithGemini(content: string, creatorHandle?: string): Promise<NarrativeExtraction> {
   const apiKey = process.env.GEMINI_API_KEY?.trim();
   if (!apiKey) throw new Error("GEMINI_API_KEY missing");
 
@@ -250,7 +257,7 @@ async function extractWithGemini(content: string): Promise<NarrativeExtraction> 
   for (const model of models) {
     for (let attempt = 0; attempt <= RETRIES_PER_MODEL; attempt++) {
       try {
-        return await callGeminiOnce(model, apiKey, content);
+        return await callGeminiOnce(model, apiKey, content, creatorHandle);
       } catch (err) {
         lastErr = err;
         const status = (err as { status?: number }).status;
@@ -289,6 +296,7 @@ function isClaudeUnusable(err: unknown): boolean {
  */
 async function extractNarrativeConcepts(
   content: string,
+  creatorHandle?: string,
 ): Promise<NarrativeExtraction | null> {
   const hasClaude = Boolean(process.env.ANTHROPIC_API_KEY?.trim());
   const hasGemini = Boolean(process.env.GEMINI_API_KEY?.trim());
@@ -299,7 +307,7 @@ async function extractNarrativeConcepts(
 
   if (hasClaude) {
     try {
-      return await extractWithClaude(content);
+      return await extractWithClaude(content, creatorHandle);
     } catch (err) {
       if (isClaudeUnusable(err)) {
         if (hasGemini) {
@@ -321,7 +329,7 @@ async function extractNarrativeConcepts(
   }
 
   // Gemini path (either primary if no Claude, or fallback after Claude failure).
-  return await extractWithGemini(content);
+  return await extractWithGemini(content, creatorHandle);
 }
 
 /** Pull a string from any of the candidate keys; defensive for Bags' inconsistent shape. */
@@ -343,6 +351,8 @@ type StoredMatch = {
   match_score: number;
   score: number;
   is_on_bags: boolean;
+  narrative: string | null;
+  logo_url: string | null;
 };
 
 /** Normalized result shape so the matching loop is provider-agnostic. */
@@ -391,6 +401,15 @@ async function jupiterSearchTokens(query: string): Promise<SearchHit[]> {
   }
 }
 
+import { bagsGetPoolByMint } from "./bagsClient";
+
+function calculateJupiterScore(organicScore: number, verified: boolean): number {
+  let score = 30; // base for Jupiter
+  if (verified) score += 30;
+  score += Math.min(40, (organicScore || 0) / 2);
+  return Math.round(score);
+}
+
 /**
  * Three-step token search:
  *   Step 1 — Bags-confirmed tokens (feed cache + Jupiter filtered by Bags mints)
@@ -403,9 +422,18 @@ async function jupiterSearchTokens(query: string): Promise<SearchHit[]> {
  */
 async function searchAndScoreTokens(
   tweet_id: string,
-  searchTerms: NarrativeExtraction["search_terms"],
+  tickers: NarrativeExtraction["tickers"],
+  nouns: NarrativeExtraction["nouns"],
+  narrative: string,
 ): Promise<StoredMatch[]> {
-  if (!searchTerms || searchTerms.length === 0) {
+  const combined = [
+    ...tickers.map((t) => ({ term: t.ticker, weight: t.weight, reason: t.reason })),
+    ...nouns.map((n) => ({ term: n.noun, weight: n.weight * 0.8, reason: n.reason })),
+  ]
+    .sort((a, b) => b.weight - a.weight)
+    .slice(0, 7);
+
+  if (combined.length === 0) {
     console.log(`[NarrativePipeline] tweet ${tweet_id}: AI returned no search terms.`);
     return [];
   }
@@ -415,17 +443,16 @@ async function searchAndScoreTokens(
   const jupiterOnlyMatches = new Map<string, StoredMatch & { rawQuality: number }>();
 
   // Limit how many term searches we fire so a chatty AI doesn't burn quota.
-  const top = searchTerms.slice(0, MAX_CANDIDATES_TO_SEARCH);
   console.log(
     `[NarrativePipeline] tweet ${tweet_id} terms:`,
-    top.map((t) => `"${t.term}" (${t.weight})`).join(", "),
+    combined.map((t) => `"${t.term}" (${t.weight})`).join(", "),
   );
 
   // Lazy-load the Bags mint set only if we need Jupiter fallback.
   let bagsMints: Set<string> | null = null;
 
   let firstJupiterCall = true;
-  for (const t of top) {
+  for (const t of combined) {
     const q = (t.term || "").trim();
     if (!q) continue;
 
@@ -440,15 +467,39 @@ async function searchAndScoreTokens(
     }
     for (const h of feedHits) {
       if (bagsMatches.has(h.mint)) continue;
-      const finalScore = Math.min(100, Math.round(aiScore + (h.quality + 10) / 4));
+      
+      let finalScore = 50;
+      try {
+        const pool = await bagsGetPoolByMint(h.mint);
+        if (pool) {
+          const stats = (pool as any).pool || pool;
+          finalScore = calculateScratchScore({
+            mcap: stats.marketCapUsd || stats.mcap || 0,
+            volume24h: stats.volume24hUsd || stats.volume24h || 0,
+            liquidity: stats.liquidityUsd || stats.liquidity || 0,
+            holders: stats.holders || stats.holderCount || 0,
+            lifecycle: stats.lifecycle || 'PRE_LAUNCH',
+            twitter: stats.twitter,
+            telegram: stats.telegram,
+            website: stats.website,
+            returns: stats.returns24h || stats.change24h
+          });
+        }
+      } catch (e) {
+        console.error(`[NarrativePipeline] Scoring failed for ${h.mint}:`, e);
+      }
+
+      const matchScore = Math.min(100, Math.round(aiScore + (h.quality + 10) / 4));
       bagsMatches.set(h.mint, {
         tweet_id,
         token_mint: h.mint,
         token_name: h.name,
         token_ticker: h.symbol,
-        match_score: finalScore,
+        match_score: matchScore,
         score: finalScore,
         is_on_bags: true,
+        narrative,
+        logo_url: null,
       });
     }
 
@@ -474,30 +525,57 @@ async function searchAndScoreTokens(
 
     for (const h of onBags) {
       if (bagsMatches.has(h.mint)) continue;
-      const finalScore = Math.min(100, Math.round(aiScore + h.quality / 4));
+      
+      let finalScore = 50;
+      try {
+        const pool = await bagsGetPoolByMint(h.mint);
+        if (pool) {
+          const stats = (pool as any).pool || pool;
+          finalScore = calculateScratchScore({
+            mcap: stats.marketCapUsd || stats.mcap || 0,
+            volume24h: stats.volume24hUsd || stats.volume24h || 0,
+            liquidity: stats.liquidityUsd || stats.liquidity || 0,
+            holders: stats.holders || stats.holderCount || 0,
+            lifecycle: stats.lifecycle || 'PRE_LAUNCH',
+            twitter: stats.twitter,
+            telegram: stats.telegram,
+            website: stats.website,
+            returns: stats.returns24h || stats.change24h
+          });
+        }
+      } catch (e) {
+        console.error(`[NarrativePipeline] Scoring failed for ${h.mint}:`, e);
+      }
+
+      const matchScore = Math.min(100, Math.round(aiScore + h.quality / 4));
       bagsMatches.set(h.mint, {
         tweet_id,
         token_mint: h.mint,
         token_name: h.name,
         token_ticker: h.symbol,
-        match_score: finalScore,
+        match_score: matchScore,
         score: finalScore,
         is_on_bags: true,
+        narrative,
+        logo_url: null,
       });
     }
 
     for (const h of offBags) {
       if (bagsMatches.has(h.mint) || jupiterOnlyMatches.has(h.mint)) continue;
-      const finalScore = Math.min(100, Math.round(aiScore + h.quality / 4));
+      const jupScore = calculateJupiterScore((h as any).organicScore || 0, (h as any).verified || false);
+      const matchScore = Math.min(100, Math.round(aiScore + h.quality / 4));
       jupiterOnlyMatches.set(h.mint, {
         tweet_id,
         token_mint: h.mint,
         token_name: h.name,
         token_ticker: h.symbol,
-        match_score: finalScore,
-        score: finalScore,
+        match_score: matchScore,
+        score: jupScore,
         is_on_bags: false,
         rawQuality: h.quality,
+        narrative,
+        logo_url: null,
       });
     }
   }
@@ -533,12 +611,14 @@ async function searchAndScoreTokens(
 export async function runNarrativePipeline({
   tweet_id,
   content,
+  creator_handle,
 }: {
   tweet_id: string;
   content: string;
+  creator_handle?: string;
 }) {
   try {
-    const result = await extractNarrativeConcepts(content);
+    const result = await extractNarrativeConcepts(content, creator_handle);
     if (!result) return; // Silent exit if no provider available
 
     // 1. Save the narrative summary on the tweet.
@@ -550,7 +630,7 @@ export async function runNarrativePipeline({
     }
 
     // 2. Match the AI's candidate tokens against the Bags catalog.
-    const matches = await searchAndScoreTokens(tweet_id, result.search_terms ?? []);
+    const matches = await searchAndScoreTokens(tweet_id, result.tickers || [], result.nouns || [], result.narrative || "");
 
     // 3. Store the top matches so the feed UI can render them.
     //    ignoreDuplicates so we don't clobber rows from earlier tweets that
@@ -558,7 +638,7 @@ export async function runNarrativePipeline({
     if (matches.length > 0) {
       const { error: upsertErr } = await supabase
         .from("narrative_tokens")
-        .upsert(matches, { onConflict: "token_mint", ignoreDuplicates: true });
+        .upsert(matches, { onConflict: "tweet_id,token_mint" });
       if (upsertErr) {
         console.warn(`[NarrativePipeline] narrative_tokens upsert error:`, upsertErr);
       }

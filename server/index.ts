@@ -536,69 +536,96 @@ app.get("/api/feed", async (req, res) => {
     const isTerminal = req.query.view === "terminal";
 
     if (isTerminal) {
-      // Group all tokens from all tweets in the feed
-      const allTokens: any[] = [];
-      for (const row of rows) {
-        const ts = Array.isArray(row.narrative_tokens) ? row.narrative_tokens : [];
-        allTokens.push(...ts.map((t: any) => ({ ...t, tweet_posted_at: row.posted_at })));
+      const tweetIdFilter = req.query.tweetId as string | undefined;
+      const narrativeFilter = req.query.narrative as string | undefined;
+      
+      let uniqueTokens: any[] = [];
+      
+      if (tweetIdFilter) {
+        const { data: tweetRows } = await supabase
+          .from("narrative_tokens")
+          .select("*")
+          .eq("tweet_id", tweetIdFilter)
+          .order("score", { ascending: false })
+          .limit(50);
+        uniqueTokens = tweetRows ?? [];
+      } else if (narrativeFilter) {
+        const { data: narrativeRows } = await supabase
+          .from("narrative_tokens")
+          .select("*")
+          .eq("narrative", narrativeFilter)
+          .order("score", { ascending: false })
+          .limit(50);
+        uniqueTokens = narrativeRows ?? [];
+      } else {
+        // Group all tokens from all tweets in the feed
+        const allTokens: any[] = [];
+        for (const row of rows) {
+          const ts = Array.isArray(row.narrative_tokens) ? row.narrative_tokens : [];
+          allTokens.push(...ts.map((t: any) => ({ ...t, tweet_posted_at: row.posted_at })));
+        }
+
+        // Deduplicate by mint
+        const uniqueMap = new Map<string, any>();
+        for (const t of allTokens) {
+          if (!t.token_mint) continue;
+          if (!uniqueMap.has(t.token_mint)) {
+            uniqueMap.set(t.token_mint, t);
+          }
+        }
+        uniqueTokens = Array.from(uniqueMap.values());
       }
 
-      // Deduplicate by mint
-      const uniqueMap = new Map<string, any>();
-      for (const t of allTokens) {
-        if (!t.token_mint) continue;
-        if (!uniqueMap.has(t.token_mint)) {
-          uniqueMap.set(t.token_mint, t);
-        }
-      }
-      const uniqueTokens = Array.from(uniqueMap.values());
+      const enriched = await Promise.all(uniqueTokens.map(async (t) => {
+        let change24h = t.returns || "0%";
+        let createdAt = t.launched_at;
+        
+        try {
+          const pool = await bagsGetPoolByMint(t.token_mint);
+          if (pool) {
+            const stats = (pool as any).pool || pool;
+            change24h = stats.returns24h || stats.change24h || change24h;
+            createdAt = stats.created_at || createdAt;
+          }
+        } catch (e) {}
+
+        return {
+          name: t.token_ticker || t.token_name || "UNKNOWN",
+          mint: t.token_mint,
+          score: t.score || t.match_score || 0,
+          time: toRelativeTime(createdAt),
+          createdAt: createdAt,
+          change24h: String(change24h),
+          mcap: formatUsdCompact(t.current_mcap),
+          volume: formatUsdCompact(t.total_volume),
+          returns: String(change24h),
+          narrative: t.narrative,
+          logoUrl: t.logo_url
+        };
+      }));
 
       const now = new Date();
       const oneWeekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
 
-      const youngTokens = uniqueTokens
-        .filter(t => t.launched_at && new Date(t.launched_at) >= oneWeekAgo)
-        .sort((a, b) => new Date(b.launched_at).getTime() - new Date(a.launched_at).getTime())
+      const youngTokens = enriched
+        .filter(t => t.createdAt && new Date(t.createdAt) >= oneWeekAgo)
+        .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
         .slice(0, 10);
 
-      const oldTokens = uniqueTokens
-        .filter(t => t.launched_at && new Date(t.launched_at) < oneWeekAgo)
-        .sort((a, b) => (b.match_score || 0) - (a.match_score || 0) || (b.total_volume || 0) - (a.total_volume || 0))
+      const oldTokens = enriched
+        .filter(t => t.createdAt && new Date(t.createdAt) < oneWeekAgo)
+        .sort((a, b) => (b.score || 0) - (a.score || 0))
         .slice(0, 10);
 
-      const myAppTokens = uniqueTokens
-        .filter(t => t.launched_here === true)
-        .sort((a, b) => new Date(b.launched_at).getTime() - new Date(a.launched_at).getTime())
+      const myAppTokens = enriched
+        .filter(t => (t as any).launched_here === true)
+        .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
         .slice(0, 10);
 
       return res.json({
-        young: youngTokens.map(t => ({
-          name: t.token_ticker || t.token_name,
-          mint: t.token_mint,
-          score: t.score || t.match_score || 0,
-          time: toRelativeTime(t.launched_at),
-          mcap: formatUsdCompact(t.current_mcap),
-          volume: formatUsdCompact(t.total_volume),
-          returns: String(t.returns || "0%")
-        })),
-        old: oldTokens.map(t => ({
-          name: t.token_ticker || t.token_name,
-          mint: t.token_mint,
-          score: t.score || t.match_score || 0,
-          time: toRelativeTime(t.launched_at),
-          mcap: formatUsdCompact(t.current_mcap),
-          volume: formatUsdCompact(t.total_volume),
-          returns: String(t.returns || "0%")
-        })),
-        myApp: myAppTokens.map(t => ({
-          name: t.token_ticker || t.token_name,
-          mint: t.token_mint,
-          score: t.score || t.match_score || 0,
-          time: toRelativeTime(t.launched_at),
-          mcap: formatUsdCompact(t.current_mcap),
-          volume: formatUsdCompact(t.total_volume),
-          returns: String(t.returns || "0%")
-        }))
+        young: youngTokens,
+        old: oldTokens,
+        myApp: myAppTokens
       });
     }
 
@@ -618,7 +645,7 @@ app.get("/api/feed", async (req, res) => {
                 ? "comment"
                 : "tweet";
       return {
-        tweet_id: row.tweet_id ?? row.id ?? null,
+        tweetId: row.tweet_id ?? row.id ?? null,
         avatar: String((creator.display_name ?? creator.handle ?? "NA")).slice(0, 2).toUpperCase(),
         avatarColor: "#B5D4F4",
         name: creator.display_name ?? creator.handle ?? "Unknown",
@@ -683,6 +710,7 @@ app.get("/api/token/:mint/metrics", async (req, res) => {
       liquidityUsd: number | null;
       holders: number | null;
       score: number | null;
+      logoUrl: string | null;
       sourceTweet: {
         id: string | null;
         content: string | null;
@@ -709,6 +737,7 @@ app.get("/api/token/:mint/metrics", async (req, res) => {
       liquidityUsd: null,
       holders: null,
       score: null,
+      logoUrl: null,
       sourceTweet: null,
       creator: null,
     };
@@ -716,7 +745,7 @@ app.get("/api/token/:mint/metrics", async (req, res) => {
     const { data: row } = await supabase
       .from("narrative_tokens")
       .select(
-        "token_name,token_ticker,is_on_bags,launched_here,launched_at,current_mcap,current_price,total_volume,score,tweet_id",
+        "token_name,token_ticker,is_on_bags,launched_here,launched_at,current_mcap,current_price,total_volume,score,tweet_id,logo_url",
       )
       .eq("token_mint", mint)
       .order("updated_at", { ascending: false })
@@ -734,6 +763,7 @@ app.get("/api/token/:mint/metrics", async (req, res) => {
       out.priceUsd = pickNum(r.current_price);
       out.volume24hUsd = pickNum(r.total_volume);
       out.score = pickNum(r.score);
+      out.logoUrl = (r.logo_url as string | null) ?? null;
 
       const tweetId = (r.tweet_id as string | null) ?? null;
       if (tweetId) {
@@ -1440,7 +1470,8 @@ app.post("/api/webhooks/twitterapi", async (req, res) => {
         // Trigger Narrative Pipeline asynchronously (fire-and-forget)
         runNarrativePipeline({
           tweet_id: tweet.id,
-          content: tweet.content
+          content: tweet.content,
+          creator_handle: creator.handle
         }).catch((err) =>
           console.error(`[Pipeline] failed for tweet ${tweet.id}:`, err)
         );
@@ -1539,8 +1570,8 @@ async function refreshTweetMetricsOnce(): Promise<void> {
       const replies = num(t.replyCount ?? t.reply_count ?? t.replies);
       const views = num(
         (t as { viewCount?: number; view_count?: number; views?: number }).viewCount ??
-          (t as { view_count?: number }).view_count ??
-          (t as { views?: number }).views,
+        (t as { view_count?: number }).view_count ??
+        (t as { views?: number }).views,
       );
 
       const { error: upErr } = await supabase
@@ -1718,7 +1749,7 @@ app.post("/api/admin/backfill-narratives", async (req, res) => {
   }
 
   console.log(`[NarrativeBackfill] Starting for ${tweets.length} tweets...`);
-  
+
   // Run in background (fire-and-forget)
   for (const tweet of tweets) {
     runNarrativePipeline({
@@ -1964,12 +1995,39 @@ app.post("/api/admin/bags/refresh-tokens", async (_req, res) => {
   res.json({ ok: true });
 });
 
+
+// ── Admin: Backfill Narrative Pipeline ───────────────────────
+app.post("/api/admin/backfill-narratives", async (req, res) => {
+  try {
+    const limit = Number(req.query.limit ?? 10);
+    const { data: tweets, error } = await supabase
+      .from("tweets")
+      .select("tweet_id, content, creator_handle")
+      .order("posted_at", { ascending: false })
+      .limit(limit);
+
+    if (error) throw error;
+
+    const results = [];
+    for (const tweet of (tweets ?? [])) {
+      console.log(`[Backfill] Processing tweet ${tweet.tweet_id}...`);
+      await runNarrativePipeline({
+        tweet_id: String(tweet.tweet_id),
+        content: String(tweet.content),
+        creator_handle: tweet.creator_handle as string | undefined,
+      }).catch(err => console.error(`[Backfill] Fail for ${tweet.tweet_id}:`, err));
+      results.push(tweet.tweet_id);
+    }
+
+    res.json({ success: true, processed: results.length, tweet_ids: results });
+  } catch (err) {
+    console.error("Backfill error:", err);
+    res.status(500).json({ error: "Backfill failed" });
+  }
+});
+
 app.listen(PORT, () => {
-  console.log(`API listening on http://localhost:${PORT}`);
-  console.log(`[feed-api] Loaded .env from project root: ${ENV_PROJECT_ROOT}`);
-  console.log(
-    `[feed-api] BAGS_API_KEY: ${bagsConfigured() ? "loaded" : "MISSING — use exact name BAGS_API_KEY in .env at project root, then restart this server"}`
-  );
+  console.log(`[feed-api] listening on port ${PORT}`);
   startMetricsRefresher();
   startCleanupJob();
   startBagsRefresher();

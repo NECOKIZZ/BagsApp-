@@ -218,7 +218,9 @@ export function TokenDetailPage() {
           {/* Identity */}
           <div className="flex justify-center mb-6">
             <div className="w-24 h-24 md:w-32 md:h-32 rounded-full flex items-center justify-center text-4xl md:text-5xl font-bold shadow-2xl overflow-hidden bg-gradient-to-br from-[#1a1f2e] to-[#0B0F17] border border-[#1a1f2e] text-white">
-              {metaLogo ? (
+              {metrics?.logoUrl ? (
+                <img src={metrics.logoUrl} alt={resolvedSymbol} className="w-full h-full object-cover" />
+              ) : metaLogo ? (
                 <img src={metaLogo} alt={resolvedSymbol} className="w-full h-full object-cover" />
               ) : sourceTweet?.imageUrl ? (
                 <img src={sourceTweet.imageUrl} alt={resolvedSymbol} className="w-full h-full object-cover" />

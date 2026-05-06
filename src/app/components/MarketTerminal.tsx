@@ -1,17 +1,21 @@
 
+
 import { useState, useMemo, useEffect } from "react";
-import { TrendingUp } from "lucide-react";
+import { useNavigate } from "react-router";
+import { TrendingUp, Filter } from "lucide-react";
 import type { TweetCardProps } from "./TweetCard";
 import { fetchTerminalData, type TerminalToken, type TerminalResponse } from "../../lib/api";
 
 interface MarketTerminalProps {
   tweets: TweetCardProps[];
   narrative?: string | null;
+  tweetId?: string | null;
 }
 
 type TerminalTab = "OLD" | "YOUNG" | "MY APP";
 
-export function MarketTerminal({ tweets, narrative }: MarketTerminalProps) {
+export function MarketTerminal({ tweets, narrative, tweetId }: MarketTerminalProps) {
+  const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState<TerminalTab>("YOUNG");
   const [data, setData] = useState<TerminalResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -19,7 +23,8 @@ export function MarketTerminal({ tweets, narrative }: MarketTerminalProps) {
   useEffect(() => {
     const load = async () => {
       try {
-        const res = await fetchTerminalData();
+        setLoading(true);
+        const res = await fetchTerminalData(narrative, tweetId);
         setData(res);
       } catch (e) {
         console.error("Failed to load terminal data", e);
@@ -30,7 +35,7 @@ export function MarketTerminal({ tweets, narrative }: MarketTerminalProps) {
     load();
     const id = setInterval(load, 30_000); // Sync with feed refresh
     return () => clearInterval(id);
-  }, []);
+  }, [narrative, tweetId]);
 
   const activeTokens = useMemo(() => {
     if (!data) return [];
@@ -51,9 +56,11 @@ export function MarketTerminal({ tweets, narrative }: MarketTerminalProps) {
     return "bg-[#5a6078]";
   };
 
-  const getReturnsColor = (returns: string) => {
-    const trimmed = returns.trim();
+  const getChangeColor = (change?: string | null) => {
+    if (!change || typeof change !== "string") return "text-[#5a6078]";
+    const trimmed = change.trim();
     if (trimmed.startsWith("-")) return "text-red-400";
+    if (trimmed === "0%" || trimmed === "0.00%") return "text-[#5a6078]";
     return "text-[#00FFA3]";
   };
 
@@ -63,12 +70,18 @@ export function MarketTerminal({ tweets, narrative }: MarketTerminalProps) {
       <div className="absolute top-0 right-0 w-24 h-24 bg-[#00FFA3]/5 rounded-full blur-2xl pointer-events-none" />
 
       {/* Header */}
-      <div className="shrink-0 bg-[#05070B]/90 backdrop-blur-md border-b border-[#1a1f2e] p-3 flex items-center justify-center">
-        <div className="min-w-0">
-          <h2 className="text-white text-sm tracking-widest uppercase truncate" style={{ fontFamily: '"Press Start 2P", system-ui' }}>
-            TERMINAL
-          </h2>
-        </div>
+      <div className="shrink-0 bg-[#05070B]/90 backdrop-blur-md border-b border-[#1a1f2e] p-3 flex flex-col items-center">
+        <h2 className="text-white text-sm tracking-widest uppercase truncate" style={{ fontFamily: '"Press Start 2P", system-ui' }}>
+          TERMINAL
+        </h2>
+        {(narrative || tweetId) && (
+          <div className="mt-2 flex items-center gap-1 px-2 py-0.5 rounded-full bg-[#00FFA3]/10 border border-[#00FFA3]/20">
+            <Filter size={10} className="text-[#00FFA3]" />
+            <span className="text-[9px] font-mono text-[#00FFA3] uppercase truncate max-w-[150px]">
+              {tweetId ? "Filtered: Linked Tokens" : `Filtered: ${narrative}`}
+            </span>
+          </div>
+        )}
       </div>
 
       {/* Tab Switcher */}
@@ -90,19 +103,10 @@ export function MarketTerminal({ tweets, narrative }: MarketTerminalProps) {
 
       {/* Table Header */}
       <div className="shrink-0 flex items-center px-3 py-2 border-b border-[#1a1f2e]/60 bg-[#05070B]/50 text-[#5a6078] font-mono text-[10px] uppercase tracking-wider">
-        <div className="w-20">Token</div>
+        <div className="w-24">Token</div>
         <div className="w-14">Score</div>
-        {activeTab === "YOUNG" ? (
-          <>
-            <div className="w-16 text-right">Time</div>
-            <div className="w-16 text-right hidden md:block">Ret</div>
-          </>
-        ) : (
-          <>
-            <div className="w-20 text-right">Mcap</div>
-            <div className="w-16 text-right hidden md:block">Time</div>
-          </>
-        )}
+        <div className="w-16 text-right">Time</div>
+        <div className="w-16 text-right hidden md:block">24h%</div>
         <div className="flex-1 text-right">Action</div>
       </div>
 
@@ -113,17 +117,39 @@ export function MarketTerminal({ tweets, narrative }: MarketTerminalProps) {
             Syncing Terminal...
           </div>
         ) : activeTokens.length === 0 ? (
-          <div className="flex items-center justify-center h-32 text-[#5a6078] text-xs">
-            No {activeTab.toLowerCase()} tokens detected
+          <div className="flex flex-col items-center justify-center h-48 px-6 text-center">
+            <div className="w-8 h-8 rounded-full bg-[#1a1f2e] flex items-center justify-center mb-3">
+              <TrendingUp size={14} className="text-[#3a4058]" />
+            </div>
+            <p className="text-[#8b92a8] text-xs font-bold mb-1">
+              No {activeTab.toLowerCase()} tokens available
+            </p>
+            <p className="text-[#5a6078] text-[10px]">
+              {tweetId 
+                ? "This post hasn't been linked to any tokens in this category yet." 
+                : "Scanning the ecosystem for new narratives..."}
+            </p>
           </div>
         ) : (
-          activeTokens.map((token: any) => (
+          activeTokens.map((token: TerminalToken) => (
             <div
               key={token.mint}
-              className="group flex items-center px-3 py-2.5 border-b border-[#1a1f2e]/40 last:border-0 hover:bg-[#00FFA3]/5 transition-all"
+              className="group flex items-center w-full px-3 py-2.5 border-b border-[#1a1f2e]/40 last:border-0 hover:bg-[#00FFA3]/5 transition-all text-left"
             >
-              <div className="font-mono font-bold text-sm w-20 truncate text-white">
-                {token.name}
+              <div className="flex items-center gap-2 w-24">
+                {token.logoUrl ? (
+                  <img src={token.logoUrl} className="w-5 h-5 rounded-full object-cover" alt={token.name} />
+                ) : (
+                  <div className="w-5 h-5 rounded-full bg-[#1a1f2e] flex items-center justify-center text-[10px] text-[#5a6078] font-mono">
+                    {(token.name || "??").slice(0, 2).toUpperCase()}
+                  </div>
+                )}
+                <button 
+                  onClick={() => navigate(`/token/${token.mint}`)}
+                  className="font-mono font-bold text-sm truncate text-white hover:text-[#00FFA3] transition-colors"
+                >
+                  {token.name || "???"}
+                </button>
               </div>
 
               <div className="flex items-center gap-1.5 w-14">
@@ -133,25 +159,13 @@ export function MarketTerminal({ tweets, narrative }: MarketTerminalProps) {
                 </span>
               </div>
 
-              {activeTab === "YOUNG" ? (
-                <>
-                  <div className="font-mono text-[#8b92a8] text-[10px] w-16 text-right">
-                    {token.time}
-                  </div>
-                  <div className={`font-mono text-[10px] font-bold w-16 text-right hidden md:block ${getReturnsColor(token.returns)}`}>
-                    {token.returns}
-                  </div>
-                </>
-              ) : (
-                <>
-                  <div className="font-mono text-[#8b92a8] text-xs w-20 text-right">
-                    {token.mcap}
-                  </div>
-                  <div className="font-mono text-[#5a6078] text-[10px] w-16 text-right hidden md:block">
-                    {token.time}
-                  </div>
-                </>
-              )}
+              <div className="font-mono text-[#8b92a8] text-[10px] w-16 text-right">
+                {token.time}
+              </div>
+
+              <div className={`font-mono text-[10px] font-bold w-16 text-right hidden md:block ${getChangeColor(token.change24h)}`}>
+                {token.change24h}
+              </div>
 
               <div className="flex-1 text-right">
                 <a
@@ -175,7 +189,7 @@ export function MarketTerminal({ tweets, narrative }: MarketTerminalProps) {
           <span className="text-[9px] font-mono text-[#5a6078] uppercase tracking-tighter">Live Narrative Sync</span>
         </div>
         <div className="text-[9px] font-mono text-[#3a4058]">
-          V2.1.0-ALPHA
+          V2.2.0-HI-FI
         </div>
       </div>
     </div>

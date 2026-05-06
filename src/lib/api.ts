@@ -62,9 +62,13 @@ export interface TerminalToken {
   mint: string;
   score: number;
   time: string;
+  createdAt: string;
+  change24h: string;
   mcap: string;
   volume: string;
   returns: string;
+  narrative?: string | null;
+  logoUrl?: string | null;
 }
 
 export interface TerminalResponse {
@@ -86,6 +90,7 @@ export type TokenMetrics = {
   liquidityUsd: number | null;
   holders: number | null;
   score: number | null;
+  logoUrl: string | null;
   sourceTweet: {
     id: string | null;
     content: string | null;
@@ -110,8 +115,13 @@ export async function fetchTokenMetrics(mint: string): Promise<TokenMetrics> {
   return res.json() as Promise<TokenMetrics>;
 }
 
-export async function fetchTerminalData(): Promise<TerminalResponse> {
-  const res = await fetch(apiUrl("/api/feed?view=terminal"));
+export async function fetchTerminalData(narrative?: string | null, tweetId?: string | null): Promise<TerminalResponse> {
+  const q = new URLSearchParams();
+  q.append("view", "terminal");
+  if (tweetId) q.append("tweetId", tweetId);
+  else if (narrative) q.append("narrative", narrative);
+  
+  const res = await fetch(apiUrl(`/api/feed?${q.toString()}`));
   if (!res.ok) {
     throw new Error(`Terminal request failed: ${res.status}`);
   }

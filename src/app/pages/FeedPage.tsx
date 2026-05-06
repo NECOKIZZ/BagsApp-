@@ -25,6 +25,7 @@ export function FeedPage() {
   const [authToken, setAuthToken] = useState<string | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [selectedNarrative, setSelectedNarrative] = useState<string | null>(null);
+  const [selectedTweetId, setSelectedTweetId] = useState<string | null>(null);
 
   const loadFeed = useCallback(async (nextFilter: FeedFilter, opts?: { silent?: boolean }) => {
     if (!opts?.silent) {
@@ -35,6 +36,10 @@ export function FeedPage() {
     try {
       const data = await fetchFeed(nextFilter);
       setTweets(data);
+      if (data.length > 0 && !selectedTweetId) {
+        setSelectedTweetId(data[0].tweetId ?? null);
+        setSelectedNarrative(data[0].narrative ?? null);
+      }
       if (opts?.silent) setError(null);
     } catch (e) {
       if (!opts?.silent) {
@@ -282,6 +287,7 @@ export function FeedPage() {
           <MarketTerminal
             tweets={visibleTweets}
             narrative={selectedNarrative}
+            tweetId={selectedTweetId}
           />
         </aside>
 
@@ -377,8 +383,11 @@ export function FeedPage() {
                     <TweetCard
                       key={tweet.tweetId ?? `${tweet.handle}-${tweet.time}-${index}`}
                       {...tweet}
-                      onSelect={() => setSelectedNarrative(tweet.narrative)}
-                      isSelected={selectedNarrative === tweet.narrative}
+                      onSelect={() => {
+                        setSelectedNarrative(tweet.narrative);
+                        setSelectedTweetId(tweet.tweetId ?? null);
+                      }}
+                      isSelected={selectedTweetId === tweet.tweetId}
                     />
                   ))}
                 </div>
