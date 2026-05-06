@@ -820,6 +820,10 @@ app.get("/api/token/:mint/metrics", async (req, res) => {
     // pump.fun / generic Jupiter token.
     const skipBags = row && row.is_on_bags === false;
 
+    // Bags pool metadata (socials/buyer_rank/returns) captured for persistence.
+    // Defaults are null so we can pass straight to persistTokenMetricsToDb.
+    let bagsMeta: ReturnType<typeof parseBagsPoolMeta> | null = null;
+
     if (bagsConfigured() && isValidSolanaMintAddress(mint) && !skipBags) {
       try {
         const pool = await bagsGetPoolByMint(mint);
@@ -835,6 +839,7 @@ app.get("/api/token/:mint/metrics", async (req, res) => {
         out.isOnBags = true;
 
         const parsed = parseBagsPoolStats(pool);
+        bagsMeta = parseBagsPoolMeta(pool);
         out.marketCapUsd = out.marketCapUsd ?? parsed.marketCapUsd;
         out.priceUsd = out.priceUsd ?? parsed.priceUsd;
         out.volume24hUsd = out.volume24hUsd ?? parsed.volume24hUsd;
@@ -871,8 +876,9 @@ app.get("/api/token/:mint/metrics", async (req, res) => {
     // pull rich metadata (logo, name, symbol, price, mcap, volume) from
     // Jupiter's token-search. This is the only source for pump.fun and
     // generic Jupiter-listed tokens.
+    let jupMeta: Awaited<ReturnType<typeof fetchJupiterTokenMeta>> = null;
     if (!out.isOnBags) {
-      const jupMeta = await fetchJupiterTokenMeta(mint);
+      jupMeta = await fetchJupiterTokenMeta(mint);
       if (jupMeta) {
         if (out.logoUrl == null && jupMeta.logoURI) out.logoUrl = jupMeta.logoURI;
         if (out.tokenName == null && jupMeta.name) out.tokenName = jupMeta.name;
@@ -901,7 +907,7 @@ app.get("/api/token/:mint/metrics", async (req, res) => {
     // Persist freshly-fetched metadata back to narrative_tokens so the
     // feed/terminal endpoints (which read straight from DB) stay in sync
     // without relying solely on the 10-min cron jobs. Fire-and-forget.
-    void persistTokenMetricsToDb(mint, out).catch((e) =>
+    void persistTokenMetricsToDb(mint, out, bagsMeta, jupMeta).catch((e) =>
       console.warn(`[token-metrics] persist failed for ${mint}:`, e instanceof Error ? e.message : String(e)),
     );
 
@@ -939,6 +945,8 @@ async function persistTokenMetricsToDb(
     holders: number | null;
     score: number | null;
   },
+  bagsMeta: ReturnType<typeof parseBagsPoolMeta> | null,
+  jupMeta: Awaited<ReturnType<typeof fetchJupiterTokenMeta>>,
 ): Promise<void> {
   const patch: Record<string, unknown> = {
     is_on_bags: out.isOnBags,
@@ -953,6 +961,23 @@ async function persistTokenMetricsToDb(
   if (out.liquidityUsd != null) patch.liquidity = out.liquidityUsd;
   if (out.holders != null) patch.holders = out.holders;
   if (out.score != null) patch.score = out.score;
+
+  // Bags pool metadata (socials/buyer_rank/returns) — only set if non-null
+  // so we never overwrite existing data with blank values.
+  if (bagsMeta) {
+    if (bagsMeta.twitter)    patch.twitter = bagsMeta.twitter;
+    if (bagsMeta.telegram)   patch.telegram = bagsMeta.telegram;
+    if (bagsMeta.website)    patch.website = bagsMeta.website;
+    if (bagsMeta.buyerRank != null) patch.buyer_rank = bagsMeta.buyerRank;
+    if (bagsMeta.returns24h) patch.returns = bagsMeta.returns24h;
+  }
+
+  // Jupiter quality signals — persist verified flag explicitly (false is
+  // meaningful; null means "we never asked"). organicScore only when fetched.
+  if (jupMeta) {
+    patch.jupiter_verified = jupMeta.verified;
+    if (jupMeta.organicScore != null) patch.jupiter_organic_score = jupMeta.organicScore;
+  }
 
   // Try the update with all known columns; if Postgrest rejects unknown columns
   // (schema cache miss), strip them and retry. Same defensive pattern as
@@ -1992,6 +2017,95 @@ function parseBagsPoolStats(pool: unknown): BagsPoolStats {
   return { marketCapUsd, priceUsd, volume24hUsd };
 }
 
+/**
+ * Extracts the *additional* metadata fields the Scratch Score formula needs:
+ * socials, buyer rank, 24h returns. Bags' pool API exposes some of these
+ * directly on the pool record and others nested under socials/links sub-objects;
+ * we check every plausible field name defensively so the score formula sees
+ * real values instead of permanent nulls.
+ *
+ * Returns null fields when not present — the formula treats them as 0
+ * contribution rather than disqualifying the token.
+ */
+function parseBagsPoolMeta(pool: unknown): {
+  twitter: string | null;
+  telegram: string | null;
+  website: string | null;
+  buyerRank: number | null;
+  returns24h: string | null;
+} {
+  const empty = { twitter: null, telegram: null, website: null, buyerRank: null, returns24h: null };
+  if (!pool || typeof pool !== "object") return empty;
+
+  const p = pool as Record<string, unknown>;
+  const inner =
+    (p.data as Record<string, unknown> | undefined) ??
+    (p.pool as Record<string, unknown> | undefined) ??
+    (p.response as Record<string, unknown> | undefined) ??
+    p;
+
+  const socials =
+    (inner.socials as Record<string, unknown> | undefined) ??
+    (inner.links as Record<string, unknown> | undefined) ??
+    (inner.metadata as Record<string, unknown> | undefined) ??
+    {};
+
+  const pickStr = (...candidates: unknown[]): string | null => {
+    for (const c of candidates) {
+      if (typeof c === "string" && c.trim()) return c.trim();
+    }
+    return null;
+  };
+
+  const twitter = pickStr(
+    inner.twitter,
+    inner.twitterUrl,
+    inner.twitter_url,
+    inner.x,
+    inner.xUrl,
+    socials.twitter,
+    socials.x,
+    socials.twitterUrl,
+    socials.twitter_url,
+  );
+  const telegram = pickStr(
+    inner.telegram,
+    inner.telegramUrl,
+    inner.telegram_url,
+    inner.tg,
+    socials.telegram,
+    socials.tg,
+    socials.telegramUrl,
+  );
+  const website = pickStr(
+    inner.website,
+    inner.websiteUrl,
+    inner.website_url,
+    inner.homepage,
+    inner.url,
+    socials.website,
+    socials.homepage,
+    socials.url,
+  );
+  const buyerRank = pickNum(
+    inner.buyerRank,
+    inner.buyer_rank,
+    inner.creatorRank,
+    inner.creator_rank,
+    inner.rank,
+  );
+  const returns24h = pickStr(
+    inner.returns24h,
+    inner.returns_24h,
+    inner.change24h,
+    inner.change_24h,
+    inner.priceChange24h,
+    inner.price_change_24h,
+  );
+
+  return { twitter, telegram, website, buyerRank, returns24h };
+}
+
 function normalizeTokenMintCandidate(input: unknown): string {
   // Pump.fun mints legitimately end in "pump" (vanity suffix that IS part of
   // the on-chain base58 address). DO NOT strip — that produces an invalid mint.
@@ -2137,9 +2251,6 @@ async function refreshBagsTokenStatsOnce(): Promise<void> {
         console.warn(`[bags-refresh] skipping invalid mint id=${row.id}: ${String(rawMint)}`);
         continue;
       }
-      // Only score tokens ending with "bags" as requested
-      const shouldScore = String(mint).toLowerCase().endsWith("bags");
-
       let pool: unknown;
       try {
         pool = await bagsGetPoolByMint(mint);
@@ -2163,6 +2274,7 @@ async function refreshBagsTokenStatsOnce(): Promise<void> {
         p;
 
       const stats = parseBagsPoolStats(pool);
+      const meta = parseBagsPoolMeta(pool);
       const liquidity = pickNum(
         inner.liquidityUsd,
         inner.liquidity_usd,
@@ -2189,43 +2301,54 @@ async function refreshBagsTokenStatsOnce(): Promise<void> {
         updated_at: new Date().toISOString(),
       };
 
-      if (shouldScore) {
-        // Run concentration check if holders changed significantly or never run
-        let top1 = row.top1_holder_pct;
-        let top5 = row.top5_holder_pct;
-        let flag = row.concentration_flag;
+      // Persist Bags-pool metadata so the scoring formula sees real values
+      // instead of permanent nulls. Only write fields we actually parsed —
+      // never overwrite existing data with null.
+      if (meta.twitter)    patch.twitter = meta.twitter;
+      if (meta.telegram)   patch.telegram = meta.telegram;
+      if (meta.website)    patch.website = meta.website;
+      if (meta.buyerRank != null) patch.buyer_rank = meta.buyerRank;
+      if (meta.returns24h) patch.returns = meta.returns24h;
 
-        const holderDiff = Math.abs((holders ?? 0) - (row.holders ?? 0));
-        const significantChange = row.holders ? holderDiff / row.holders > 0.2 : true;
-
-        if (significantChange || top1 === null) {
-          const conc = await getConcentrationData(mint, rpcUrl);
-          top1 = conc.top1Pct;
-          top5 = conc.top5Pct;
-          flag = conc.flag;
-          patch.top1_holder_pct = top1;
-          patch.top5_holder_pct = top5;
-          patch.concentration_flag = flag;
-        }
-
-        const score = calculateScratchScore({
-          mcap: stats.marketCapUsd ?? 0,
-          volume24h: stats.volume24hUsd ?? 0,
-          liquidity: liquidity ?? 0,
-          holders: holders ?? 0,
-          lifecycle,
-          twitter: row.twitter,
-          telegram: row.telegram,
-          website: row.website,
-          buyerRank: row.buyer_rank,
-          returns: row.returns,
-          top1HolderPct: top1,
-          top5HolderPct: top5,
-        });
-
-        patch.score = score;
-        console.log(`[bags-refresh] Scored ${mint}: ${score}`);
+      // Concentration: compute when missing OR when holders moved >20%.
+      // No `shouldScore` gate — the formula uses these for ALL Bags tokens.
+      let top1 = row.top1_holder_pct;
+      let top5 = row.top5_holder_pct;
+      let flag = row.concentration_flag;
+      const holderDiff = Math.abs((holders ?? 0) - (row.holders ?? 0));
+      const significantChange = row.holders ? holderDiff / row.holders > 0.2 : true;
+      if (top1 == null || significantChange) {
+        const conc = await getConcentrationData(mint, rpcUrl);
+        top1 = conc.top1Pct;
+        top5 = conc.top5Pct;
+        flag = conc.flag;
+        patch.top1_holder_pct = top1;
+        patch.top5_holder_pct = top5;
+        patch.concentration_flag = flag;
       }
+
+      // Score every Bags token, every cycle. Pass merged data: freshly-parsed
+      // pool metadata (overrides) + persisted row fields + Jupiter signals if
+      // this token also has Jupiter data on file (some tokens are on both).
+      const score = calculateScratchScore({
+        mcap: stats.marketCapUsd ?? 0,
+        volume24h: stats.volume24hUsd ?? 0,
+        liquidity: liquidity ?? 0,
+        holders: holders ?? 0,
+        lifecycle,
+        twitter: meta.twitter ?? row.twitter ?? undefined,
+        telegram: meta.telegram ?? row.telegram ?? undefined,
+        website: meta.website ?? row.website ?? undefined,
+        buyerRank: meta.buyerRank ?? row.buyer_rank ?? undefined,
+        returns: meta.returns24h ?? row.returns ?? undefined,
+        top1HolderPct: top1 ?? undefined,
+        top5HolderPct: top5 ?? undefined,
+        jupiterVerified: row.jupiter_verified === true,
+        jupiterOrganicScore:
+          typeof row.jupiter_organic_score === "number" ? row.jupiter_organic_score : undefined,
+      });
+      patch.score = score;
+      console.log(`[bags-refresh] Scored ${mint}: ${score}`);
 
       if (mint !== rawMint) {
         patch.token_mint = mint;
@@ -2390,6 +2513,10 @@ async function refreshJupiterTokenMetadataOnce(): Promise<void> {
       if (meta.volume24hUsd != null) patch.total_volume = meta.volume24hUsd;
       if (meta.liquidityUsd != null) patch.liquidity = meta.liquidityUsd;
       if (meta.holderCount != null) patch.holders = meta.holderCount;
+      // Persist Jupiter quality signals so bags-refresh can apply them too
+      // for tokens that exist on both sources.
+      patch.jupiter_verified = meta.verified;
+      if (meta.organicScore != null) patch.jupiter_organic_score = meta.organicScore;
       if (jupScore > 0) patch.score = jupScore;
 
       const { error: upErr } = await updateNarrativeTokenWithColumnFallback(String(row.id), patch, "jupiter-meta");
