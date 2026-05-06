@@ -47,12 +47,10 @@ function relativeTime(iso: string | null | undefined): string {
 }
 
 function scoreColor(score: number | null | undefined): string {
-  const s = score ?? 0;
-  if (s >= 80) return "#22c55e";
-  if (s >= 60) return "#5DCAA5";
-  if (s >= 40) return "#EF9F27";
-  if (s >= 20) return "#71717A";
-  return "#ef4444";
+  // Smooth red(0) → yellow(50) → green(100) gradient via HSL hue 0..120.
+  const s = Math.max(0, Math.min(100, score ?? 0));
+  const hue = (s / 100) * 120;
+  return `hsl(${hue}, 80%, 55%)`;
 }
 
 function stripTweetTypePrefix(text: string | null | undefined): string {

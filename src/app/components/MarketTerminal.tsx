@@ -44,17 +44,11 @@ export function MarketTerminal({ tweets, narrative, tweetId }: MarketTerminalPro
     return data.myApp ?? [];
   }, [data, activeTab]);
 
-  const getScoreColor = (score: number) => {
-    if (score >= 80) return "text-[#00FFA3]";
-    if (score >= 50) return "text-[#00d4ff]";
-    return "text-[#5a6078]";
-  };
-
-  const getScoreDot = (score: number) => {
-    if (score >= 80) return "bg-[#00FFA3] shadow-[0_0_6px_rgba(0,255,163,0.6)]";
-    if (score >= 50) return "bg-[#00d4ff] shadow-[0_0_6px_rgba(0,212,255,0.5)]";
-    return "bg-[#5a6078]";
-  };
+  // Smooth gradient: green at 100 → yellow at 50 → red at 0.
+  // HSL hue 0=red, 60=yellow, 120=green; we map score linearly to that range.
+  const scoreHue = (score: number) => Math.max(0, Math.min(120, (score / 100) * 120));
+  const scoreHsl = (score: number, l = 55) => `hsl(${scoreHue(score)}, 80%, ${l}%)`;
+  const scoreShadow = (score: number) => `0 0 6px hsla(${scoreHue(score)}, 80%, 55%, 0.55)`;
 
   const getChangeColor = (change?: string | null) => {
     if (!change || typeof change !== "string") return "text-[#5a6078]";
@@ -70,8 +64,8 @@ export function MarketTerminal({ tweets, narrative, tweetId }: MarketTerminalPro
       <div className="absolute top-0 right-0 w-24 h-24 bg-[#00FFA3]/5 rounded-full blur-2xl pointer-events-none" />
 
       {/* Header */}
-      <div className="shrink-0 bg-[#05070B]/90 backdrop-blur-md border-b border-[#1a1f2e] p-3 flex flex-col items-center">
-        <h2 className="text-white text-sm tracking-widest uppercase truncate" style={{ fontFamily: '"Press Start 2P", system-ui' }}>
+      <div className="shrink-0 bg-[#05070B]/90 backdrop-blur-md border-b border-[#1a1f2e] p-4 flex flex-col items-center">
+        <h2 className="text-white text-xl md:text-2xl tracking-widest uppercase truncate" style={{ fontFamily: '"Press Start 2P", system-ui' }}>
           TERMINAL
         </h2>
       </div>
@@ -145,8 +139,14 @@ export function MarketTerminal({ tweets, narrative, tweetId }: MarketTerminalPro
               </div>
 
               <div className="flex items-center justify-end gap-1.5 w-12">
-                <div className={`w-1.5 h-1.5 rounded-full ${getScoreDot(token.score)}`} />
-                <span className={`font-mono text-xs font-bold ${getScoreColor(token.score)}`}>
+                <div
+                  className="w-1.5 h-1.5 rounded-full"
+                  style={{ backgroundColor: scoreHsl(token.score), boxShadow: scoreShadow(token.score) }}
+                />
+                <span
+                  className="font-mono text-xs font-bold"
+                  style={{ color: scoreHsl(token.score) }}
+                >
                   {token.score}
                 </span>
               </div>
