@@ -684,6 +684,12 @@ app.get("/api/feed", async (req, res) => {
   }
 });
 
+// In-memory TTL cache for /api/token/:mint/metrics responses.
+// Bags + Jupiter calls take 500-1500ms each; caching for 60s collapses
+// repeat detail-page views into instant DB-only reads.
+const METRICS_CACHE_TTL_MS = Number(process.env.METRICS_CACHE_TTL_MS ?? 60_000);
+const metricsCache = new Map<string, { ts: number; data: unknown }>();
+
 app.get("/api/token/:mint/metrics", async (req, res) => {
   try {
     const requestedMint = String(req.params.mint ?? "").trim();
@@ -692,6 +698,16 @@ app.get("/api/token/:mint/metrics", async (req, res) => {
       res.status(400).json({ error: "mint is required" });
       return;
     }
+
+    // Serve cached response if still fresh.
+    const cached = metricsCache.get(mint);
+    if (cached && Date.now() - cached.ts < METRICS_CACHE_TTL_MS) {
+      res.setHeader("X-Cache", "HIT");
+      res.setHeader("Cache-Control", `public, max-age=${Math.floor(METRICS_CACHE_TTL_MS / 1000)}`);
+      return res.json(cached.data);
+    }
+    res.setHeader("X-Cache", "MISS");
+    res.setHeader("Cache-Control", `public, max-age=${Math.floor(METRICS_CACHE_TTL_MS / 1000)}`);
 
     const out: {
       mint: string;
@@ -880,6 +896,14 @@ app.get("/api/token/:mint/metrics", async (req, res) => {
       if (supplyUi != null) {
         out.marketCapUsd = out.priceUsd * supplyUi;
       }
+    }
+
+    // Cache the assembled response for METRICS_CACHE_TTL_MS.
+    metricsCache.set(mint, { ts: Date.now(), data: out });
+    // Soft cap on cache size so a runaway crawler can't OOM the process.
+    if (metricsCache.size > 500) {
+      const oldestKey = metricsCache.keys().next().value;
+      if (oldestKey) metricsCache.delete(oldestKey);
     }
 
     res.json(out);

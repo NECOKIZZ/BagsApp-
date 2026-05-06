@@ -103,11 +103,11 @@ export function MarketTerminal({ tweets, narrative, tweetId }: MarketTerminalPro
 
       {/* Table Header */}
       <div className="shrink-0 flex items-center px-3 py-2 border-b border-[#1a1f2e]/60 bg-[#05070B]/50 text-[#5a6078] font-mono text-[10px] uppercase tracking-wider">
-        <div className="w-24">Token</div>
-        <div className="w-14">Score</div>
-        <div className="w-16 text-right">Time</div>
-        <div className="w-16 text-right hidden md:block">24h%</div>
-        <div className="flex-1 text-right">Action</div>
+        <div className="flex-1 min-w-0">Token</div>
+        <div className="w-12 text-right">Score</div>
+        <div className="w-14 text-right">Time</div>
+        <div className="w-14 text-right hidden md:block">24h%</div>
+        <div className="w-14 text-right">Action</div>
       </div>
 
       {/* Token List */}
@@ -136,38 +136,38 @@ export function MarketTerminal({ tweets, narrative, tweetId }: MarketTerminalPro
               key={token.mint}
               className="group flex items-center w-full px-3 py-2.5 border-b border-[#1a1f2e]/40 last:border-0 hover:bg-[#00FFA3]/5 transition-all text-left"
             >
-              <div className="flex items-center gap-2 w-24">
+              <div className="flex items-center gap-2 flex-1 min-w-0">
                 {token.logoUrl ? (
-                  <img src={token.logoUrl} className="w-5 h-5 rounded-full object-cover" alt={token.name} />
+                  <img src={token.logoUrl} className="w-5 h-5 rounded-full object-cover shrink-0" alt={token.name} />
                 ) : (
-                  <div className="w-5 h-5 rounded-full bg-[#1a1f2e] flex items-center justify-center text-[10px] text-[#5a6078] font-mono">
+                  <div className="w-5 h-5 rounded-full bg-[#1a1f2e] flex items-center justify-center text-[10px] text-[#5a6078] font-mono shrink-0">
                     {(token.name || "??").slice(0, 2).toUpperCase()}
                   </div>
                 )}
                 <button 
                   onClick={() => navigate(`/token/${token.mint}`)}
-                  className="font-mono font-bold text-sm truncate text-white hover:text-[#00FFA3] transition-colors"
+                  className="font-mono font-bold text-sm truncate text-white hover:text-[#00FFA3] transition-colors min-w-0"
                 >
                   {token.name || "???"}
                 </button>
               </div>
 
-              <div className="flex items-center gap-1.5 w-14">
+              <div className="flex items-center justify-end gap-1.5 w-12">
                 <div className={`w-1.5 h-1.5 rounded-full ${getScoreDot(token.score)}`} />
                 <span className={`font-mono text-xs font-bold ${getScoreColor(token.score)}`}>
                   {token.score}
                 </span>
               </div>
 
-              <div className="font-mono text-[#8b92a8] text-[10px] w-16 text-right">
+              <div className="font-mono text-[#8b92a8] text-[10px] w-14 text-right">
                 {token.time}
               </div>
 
-              <div className={`font-mono text-[10px] font-bold w-16 text-right hidden md:block ${getChangeColor(token.change24h)}`}>
+              <div className={`font-mono text-[10px] font-bold w-14 text-right hidden md:block ${getChangeColor(token.change24h)}`}>
                 {token.change24h}
               </div>
 
-              <div className="flex-1 text-right">
+              <div className="w-14 text-right">
                 <a
                   href={`https://jup.ag/swap/SOL-${token.mint}`}
                   target="_blank"
