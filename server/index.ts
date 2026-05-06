@@ -1901,6 +1901,27 @@ app.post("/api/admin/twitterapi/backfill-kinds", async (req, res) => {
  *   or:      { handle?: string }  → picks the most recent tweet from that handle
  *   or:      {}                   → picks the most recent tweet overall
  */
+/**
+ * Read-only inspect: returns narrative_tokens rows for a given tweet_id
+ * without modifying anything. Use after `/api/admin/replay-tweet` + the
+ * enrichment crons to see final scores.
+ */
+app.get("/api/admin/tweet-tokens/:tweetId", async (req, res) => {
+  try {
+    const tweetId = String(req.params.tweetId ?? "").trim();
+    if (!tweetId) return res.status(400).json({ error: "Missing tweetId" });
+    const { data, error } = await supabase
+      .from("narrative_tokens")
+      .select("*")
+      .eq("tweet_id", tweetId)
+      .order("score", { ascending: false });
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ ok: true, tweet_id: tweetId, count: data?.length ?? 0, tokens: data ?? [] });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
 app.post("/api/admin/replay-tweet", async (req, res) => {
   try {
     const body = (req.body ?? {}) as { tweet_id?: unknown; handle?: unknown };
