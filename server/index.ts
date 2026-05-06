@@ -576,23 +576,17 @@ app.get("/api/feed", async (req, res) => {
         uniqueTokens = Array.from(uniqueMap.values());
       }
 
-      const enriched = await Promise.all(uniqueTokens.map(async (t) => {
-        let change24h = t.returns || "0%";
-        let createdAt = t.launched_at;
-        
-        try {
-          const pool = await bagsGetPoolByMint(t.token_mint);
-          if (pool) {
-            const stats = (pool as any).pool || pool;
-            change24h = stats.returns24h || stats.change24h || change24h;
-            createdAt = stats.created_at || createdAt;
-          }
-        } catch (e) {}
-
+      // DB-only read. Cron (`refreshBagsTokenStatsOnce`) is responsible for
+      // keeping current_mcap / total_volume / returns / score fresh. Calling
+      // Bags here per-request caused N×400s on every page load.
+      const enriched = uniqueTokens.map((t) => {
+        const change24h = t.returns || "0%";
+        const createdAt = t.launched_at;
         return {
           name: t.token_ticker || t.token_name || "UNKNOWN",
           mint: t.token_mint,
           launched_here: Boolean(t.launched_here),
+          is_on_bags: Boolean(t.is_on_bags),
           score: t.score || t.match_score || 0,
           time: toRelativeTime(createdAt),
           createdAt: createdAt,
@@ -601,9 +595,9 @@ app.get("/api/feed", async (req, res) => {
           volume: formatUsdCompact(t.total_volume),
           returns: String(change24h),
           narrative: t.narrative,
-          logoUrl: t.logo_url
+          logoUrl: t.logo_url,
         };
-      }));
+      });
 
       const now = new Date();
       const oneWeekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
@@ -805,7 +799,12 @@ app.get("/api/token/:mint/metrics", async (req, res) => {
       }
     }
 
-    if (bagsConfigured() && isValidSolanaMintAddress(mint)) {
+    // Skip Bags call if DB already says this mint is not a Bags token.
+    // Saves a guaranteed-400 round trip on every detail-page view of a
+    // pump.fun / generic Jupiter token.
+    const skipBags = row && row.is_on_bags === false;
+
+    if (bagsConfigured() && isValidSolanaMintAddress(mint) && !skipBags) {
       try {
         const pool = await bagsGetPoolByMint(mint);
         const p = (pool ?? {}) as Record<string, unknown>;
@@ -839,12 +838,37 @@ app.get("/api/token/:mint/metrics", async (req, res) => {
         );
         out.score = pickNum(inner.score, inner.scratchScore) ?? out.score;
       } catch (e) {
-        console.warn(`[token-metrics] bags lookup failed for ${mint}:`, e);
+        // 400 = mint not on Bags. Flip the flag so we don't keep asking.
+        if (e instanceof BagsApiError && e.status === 400) {
+          out.isOnBags = false;
+          await supabase
+            .from("narrative_tokens")
+            .update({ is_on_bags: false, updated_at: new Date().toISOString() })
+            .eq("token_mint", mint);
+        } else {
+          console.warn(`[token-metrics] bags lookup failed for ${mint}:`, e);
+        }
       }
     }
 
     // Fallback for tokens not on Bags (or when Bags has sparse data):
-    // use Jupiter price + Solana supply to fill price and derive market cap.
+    // pull rich metadata (logo, name, symbol, price, mcap, volume) from
+    // Jupiter's token-search. This is the only source for pump.fun and
+    // generic Jupiter-listed tokens.
+    if (!out.isOnBags) {
+      const jupMeta = await fetchJupiterTokenMeta(mint);
+      if (jupMeta) {
+        if (out.logoUrl == null && jupMeta.logoURI) out.logoUrl = jupMeta.logoURI;
+        if (out.tokenName == null && jupMeta.name) out.tokenName = jupMeta.name;
+        if (out.tokenTicker == null && jupMeta.symbol) out.tokenTicker = jupMeta.symbol;
+        if (out.priceUsd == null && jupMeta.usdPrice != null) out.priceUsd = jupMeta.usdPrice;
+        if (out.marketCapUsd == null) out.marketCapUsd = jupMeta.mcap ?? jupMeta.fdv ?? null;
+        if (out.volume24hUsd == null && jupMeta.volume24hUsd != null) out.volume24hUsd = jupMeta.volume24hUsd;
+        if (out.liquidityUsd == null && jupMeta.liquidityUsd != null) out.liquidityUsd = jupMeta.liquidityUsd;
+        if (out.holders == null && jupMeta.holderCount != null) out.holders = jupMeta.holderCount;
+      }
+    }
+
     if (out.priceUsd == null) {
       const jupPrice = await fetchJupiterPriceUsd(mint);
       if (jupPrice != null) {
@@ -1884,12 +1908,10 @@ function parseBagsPoolStats(pool: unknown): BagsPoolStats {
 }
 
 function normalizeTokenMintCandidate(input: unknown): string {
-  const raw = String(input ?? "").trim();
-  if (!raw) return "";
-  // Some upstream token symbols are persisted with a trailing "pump".
-  // Bags expects canonical base58 mint addresses.
-  if (raw.toLowerCase().endsWith("pump")) return raw.slice(0, -4);
-  return raw;
+  // Pump.fun mints legitimately end in "pump" (vanity suffix that IS part of
+  // the on-chain base58 address). DO NOT strip — that produces an invalid mint.
+  // Trust the value as stored; rely on isValidSolanaMintAddress() for validation.
+  return String(input ?? "").trim();
 }
 
 function isValidSolanaMintAddress(mint: string): boolean {
@@ -1997,11 +2019,17 @@ async function refreshBagsTokenStatsOnce(): Promise<void> {
   const limit = Number(process.env.BAGS_REFRESH_LIMIT ?? 50);
   const rpcUrl = process.env.HELIUS_RPC_URL || "https://api.mainnet-beta.solana.com";
 
-  // Pull tokens that need refresh
+  // Pull tokens that need refresh.
+  // Only fetch tokens flagged as Bags-launched. Bags' API returns 400 for any
+  // mint not in its catalog (pump.fun, generic Jupiter tokens), so we'd just
+  // burn rate limit on guaranteed failures. is_on_bags is set true at insert
+  // time when matched against the Bags pool list, and flipped false below if
+  // Bags returns 400 for it.
   const { data, error } = await supabase
     .from("narrative_tokens")
     .select("*")
     .not("token_mint", "is", null)
+    .eq("is_on_bags", true)
     .limit(limit);
 
   if (error) {
@@ -2026,7 +2054,21 @@ async function refreshBagsTokenStatsOnce(): Promise<void> {
       // Only score tokens ending with "bags" as requested
       const shouldScore = String(mint).toLowerCase().endsWith("bags");
 
-      const pool = await bagsGetPoolByMint(mint);
+      let pool: unknown;
+      try {
+        pool = await bagsGetPoolByMint(mint);
+      } catch (poolErr) {
+        // 400 = Bags doesn't have this mint. Flip the flag so we stop asking.
+        if (poolErr instanceof BagsApiError && poolErr.status === 400) {
+          await supabase
+            .from("narrative_tokens")
+            .update({ is_on_bags: false, updated_at: new Date().toISOString() })
+            .eq("id", row.id);
+          console.log(`[bags-refresh] mint not on Bags, flipped is_on_bags=false: ${mint}`);
+          continue;
+        }
+        throw poolErr;
+      }
       const p = (pool ?? {}) as Record<string, unknown>;
       const inner =
         (p.data as Record<string, unknown> | undefined) ??
@@ -2137,10 +2179,167 @@ app.post("/api/admin/bags/refresh-tokens", async (_req, res) => {
   res.json({ ok: true });
 });
 
+// ── Jupiter metadata enrichment ──────────────────────────────
+/**
+ * Fetches metadata for a single mint from Jupiter's token-search endpoint.
+ * Returns name/symbol/logoURI plus market data (price, mcap, volume, holders).
+ * Used to enrich non-Bags tokens (pump.fun, generic Solana mints).
+ */
+type JupiterTokenMeta = {
+  name: string | null;
+  symbol: string | null;
+  logoURI: string | null;
+  usdPrice: number | null;
+  mcap: number | null;
+  fdv: number | null;
+  liquidityUsd: number | null;
+  volume24hUsd: number | null;
+  holderCount: number | null;
+  organicScore: number | null;
+  verified: boolean;
+};
+
+async function fetchJupiterTokenMeta(mint: string): Promise<JupiterTokenMeta | null> {
+  if (!mint) return null;
+  const apiKey = (process.env.JUPITER_API_KEY ?? "").trim();
+  const host = apiKey ? "https://api.jup.ag" : "https://lite-api.jup.ag";
+  const headers: Record<string, string> = apiKey ? { "x-api-key": apiKey } : {};
+  const timeoutMs = Number(process.env.JUPITER_HTTP_TIMEOUT_MS ?? 5000);
+
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), timeoutMs);
+    const res = await fetch(`${host}/tokens/v2/search?query=${encodeURIComponent(mint)}`, {
+      headers,
+      signal: ctrl.signal,
+    }).finally(() => clearTimeout(t));
+    if (!res.ok) return null;
+    const arr = (await res.json()) as Array<Record<string, unknown>>;
+    if (!Array.isArray(arr)) return null;
+    // Find the exact-mint match (search may return related tokens too).
+    const hit = arr.find((r) => {
+      const id = String(r.id ?? r.mint ?? r.address ?? "");
+      return id === mint;
+    });
+    if (!hit) return null;
+    return {
+      name: (hit.name as string | null) ?? null,
+      symbol: (hit.symbol as string | null) ?? null,
+      logoURI: (hit.icon as string | null) ?? (hit.logoURI as string | null) ?? null,
+      usdPrice: pickNum(hit.usdPrice, hit.price),
+      mcap: pickNum(hit.mcap, hit.marketCap),
+      fdv: pickNum(hit.fdv),
+      liquidityUsd: pickNum(hit.liquidity),
+      volume24hUsd: pickNum((hit.stats24h as Record<string, unknown> | undefined)?.volume, hit.volume24h),
+      holderCount: pickNum(hit.holderCount, hit.holders),
+      organicScore: pickNum(hit.organicScore),
+      verified: hit.isVerified === true,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Enriches non-Bags tokens (is_on_bags=false OR null) with Jupiter metadata.
+ * Fills logo_url, token_name, token_ticker, current_price, current_mcap,
+ * total_volume, holders, score (Jupiter-derived).
+ */
+async function refreshJupiterTokenMetadataOnce(): Promise<void> {
+  const limit = Number(process.env.JUPITER_REFRESH_LIMIT ?? 50);
+
+  // Pull tokens that are NOT on Bags (or unknown) — they need Jupiter metadata.
+  const { data, error } = await supabase
+    .from("narrative_tokens")
+    .select("id, token_mint, token_name, token_ticker, logo_url, is_on_bags")
+    .not("token_mint", "is", null)
+    .or("is_on_bags.is.null,is_on_bags.eq.false")
+    .limit(limit);
+
+  if (error) {
+    console.error("[jupiter-meta] select error:", error.message);
+    return;
+  }
+  const rows = (data ?? []) as any[];
+  if (rows.length === 0) {
+    console.log("[jupiter-meta] no tokens to enrich");
+    return;
+  }
+
+  let updated = 0;
+  for (const row of rows) {
+    try {
+      const mint = normalizeTokenMintCandidate(row.token_mint);
+      if (!isValidSolanaMintAddress(mint)) continue;
+
+      const meta = await fetchJupiterTokenMeta(mint);
+      if (!meta) {
+        // Be polite — don't hammer Jupiter.
+        await new Promise((r) => setTimeout(r, 200));
+        continue;
+      }
+
+      // Jupiter score: organic + verified bonus, capped at 100.
+      const jupScore = Math.min(
+        100,
+        Math.round((meta.verified ? 30 : 0) + (meta.organicScore ?? 0)),
+      );
+
+      const patch: Record<string, any> = {
+        updated_at: new Date().toISOString(),
+      };
+      if (meta.logoURI && !row.logo_url) patch.logo_url = meta.logoURI;
+      if (meta.name && !row.token_name) patch.token_name = meta.name;
+      if (meta.symbol && !row.token_ticker) patch.token_ticker = meta.symbol;
+      if (meta.usdPrice != null) patch.current_price = meta.usdPrice;
+      if (meta.mcap != null) patch.current_mcap = meta.mcap;
+      else if (meta.fdv != null) patch.current_mcap = meta.fdv;
+      if (meta.volume24hUsd != null) patch.total_volume = meta.volume24hUsd;
+      if (meta.holderCount != null) patch.holders = meta.holderCount;
+      if (jupScore > 0) patch.score = jupScore;
+
+      const { error: upErr } = await updateNarrativeTokenWithColumnFallback(String(row.id), patch);
+      if (upErr) {
+        console.warn(`[jupiter-meta] update fail id=${row.id}:`, upErr.message);
+      } else {
+        updated++;
+      }
+
+      // Polite delay between Jupiter calls.
+      await new Promise((r) => setTimeout(r, 150));
+    } catch (e) {
+      console.warn(
+        `[jupiter-meta] fail mint=${row.token_mint}:`,
+        e instanceof Error ? e.message : String(e),
+      );
+    }
+  }
+  console.log(`[jupiter-meta] enriched=${updated}/${rows.length}`);
+}
+
+function startJupiterMetadataRefresher(): void {
+  const intervalMs = Number(process.env.JUPITER_REFRESH_INTERVAL_MS ?? 600_000); // 10 min
+  if (intervalMs <= 0) {
+    console.log("[jupiter-meta] disabled (JUPITER_REFRESH_INTERVAL_MS<=0)");
+    return;
+  }
+  console.log(`[jupiter-meta] enabled, interval=${Math.round(intervalMs / 1000)}s`);
+  setTimeout(() => {
+    void refreshJupiterTokenMetadataOnce();
+    setInterval(() => void refreshJupiterTokenMetadataOnce(), intervalMs);
+  }, 45_000);
+}
+
+app.post("/api/admin/jupiter/refresh-metadata", async (_req, res) => {
+  await refreshJupiterTokenMetadataOnce();
+  res.json({ ok: true });
+});
+
 app.listen(PORT, () => {
   console.log(`[feed-api] listening on port ${PORT}`);
   startMetricsRefresher();
   startCleanupJob();
   startBagsRefresher();
+  startJupiterMetadataRefresher();
   startFeedCacheRefresher();
 });
