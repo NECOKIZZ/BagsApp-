@@ -2,7 +2,7 @@
 
 import { useState, useMemo, useEffect } from "react";
 import { useNavigate } from "react-router";
-import { TrendingUp, Filter } from "lucide-react";
+import { TrendingUp } from "lucide-react";
 import type { TweetCardProps } from "./TweetCard";
 import { fetchTerminalData, type TerminalToken, type TerminalResponse } from "../../lib/api";
 
@@ -74,14 +74,6 @@ export function MarketTerminal({ tweets, narrative, tweetId }: MarketTerminalPro
         <h2 className="text-white text-sm tracking-widest uppercase truncate" style={{ fontFamily: '"Press Start 2P", system-ui' }}>
           TERMINAL
         </h2>
-        {(narrative || tweetId) && (
-          <div className="mt-2 flex items-center gap-1 px-2 py-0.5 rounded-full bg-[#00FFA3]/10 border border-[#00FFA3]/20">
-            <Filter size={10} className="text-[#00FFA3]" />
-            <span className="text-[9px] font-mono text-[#00FFA3] uppercase truncate max-w-[150px]">
-              {tweetId ? "Filtered: Linked Tokens" : `Filtered: ${narrative}`}
-            </span>
-          </div>
-        )}
       </div>
 
       {/* Tab Switcher */}
