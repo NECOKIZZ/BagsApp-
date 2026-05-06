@@ -1948,7 +1948,9 @@ app.post("/api/admin/replay-tweet", async (req, res) => {
     if (fetchErr) {
       return res.status(500).json({ error: "Tweet lookup failed", detail: fetchErr.message });
     }
-    const tweet = tweetRows?.[0];
+    // Cast: dynamic select(string) returns Supabase's GenericStringError type
+    // because the column list isn't a literal — it's safe to treat as Record here.
+    const tweet = (tweetRows?.[0] ?? null) as Record<string, unknown> | null;
     if (!tweet) {
       return res.status(404).json({ error: "No matching tweet found" });
     }
