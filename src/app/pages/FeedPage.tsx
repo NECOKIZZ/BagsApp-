@@ -36,13 +36,25 @@ export function FeedPage() {
     try {
       const data = await fetchFeed(nextFilter);
       setTweets(data);
-      if (data.length > 0 && selectedTweetId === null) {
-        const firstId = data[0].tweetId;
-        if (firstId) {
-          setSelectedTweetId(firstId);
-          setSelectedNarrative(data[0].narrative ?? null);
+      setSelectedTweetId((prevSelectedId) => {
+        if (data.length === 0) {
+          setSelectedNarrative(null);
+          return null;
         }
-      }
+
+        if (prevSelectedId) {
+          const stillExists = data.find((t) => t.tweetId === prevSelectedId);
+          if (stillExists) {
+            setSelectedNarrative(stillExists.narrative ?? null);
+            return prevSelectedId;
+          }
+        }
+
+        const firstWithId = data.find((t) => Boolean(t.tweetId));
+        const fallback = firstWithId ?? data[0];
+        setSelectedNarrative(fallback.narrative ?? null);
+        return fallback.tweetId ?? null;
+      });
       if (opts?.silent) setError(null);
     } catch (e) {
       if (!opts?.silent) {

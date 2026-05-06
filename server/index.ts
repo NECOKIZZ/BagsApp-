@@ -592,6 +592,7 @@ app.get("/api/feed", async (req, res) => {
         return {
           name: t.token_ticker || t.token_name || "UNKNOWN",
           mint: t.token_mint,
+          launched_here: Boolean(t.launched_here),
           score: t.score || t.match_score || 0,
           time: toRelativeTime(createdAt),
           createdAt: createdAt,
@@ -691,7 +692,8 @@ app.get("/api/feed", async (req, res) => {
 
 app.get("/api/token/:mint/metrics", async (req, res) => {
   try {
-    const mint = String(req.params.mint ?? "").trim();
+    const requestedMint = String(req.params.mint ?? "").trim();
+    const mint = normalizeTokenMintCandidate(requestedMint);
     if (!mint) {
       res.status(400).json({ error: "mint is required" });
       return;
@@ -742,16 +744,17 @@ app.get("/api/token/:mint/metrics", async (req, res) => {
       creator: null,
     };
 
-    const { data: row } = await supabase
+    const mintCandidates = Array.from(new Set([mint, requestedMint].filter(Boolean)));
+    const { data: rows } = await supabase
       .from("narrative_tokens")
       .select(
         "token_name,token_ticker,is_on_bags,launched_here,launched_at,current_mcap,current_price,total_volume,score,tweet_id,logo_url",
       )
-      .eq("token_mint", mint)
+      .in("token_mint", mintCandidates)
       .order("updated_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
+      .limit(1);
 
+    const row = Array.isArray(rows) && rows.length > 0 ? rows[0] : null;
     if (row) {
       const r = row as Record<string, unknown>;
       out.tokenName = (r.token_name as string | null) ?? null;
@@ -802,7 +805,7 @@ app.get("/api/token/:mint/metrics", async (req, res) => {
       }
     }
 
-    if (bagsConfigured()) {
+    if (bagsConfigured() && isValidSolanaMintAddress(mint)) {
       try {
         const pool = await bagsGetPoolByMint(mint);
         const p = (pool ?? {}) as Record<string, unknown>;
@@ -811,6 +814,10 @@ app.get("/api/token/:mint/metrics", async (req, res) => {
           (p.pool as Record<string, unknown> | undefined) ??
           (p.response as Record<string, unknown> | undefined) ??
           p;
+
+        // If Bags returns 200 for this mint, treat it as listed on Bags
+        // even when local DB hasn't been enriched yet.
+        out.isOnBags = true;
 
         const parsed = parseBagsPoolStats(pool);
         out.marketCapUsd = out.marketCapUsd ?? parsed.marketCapUsd;
@@ -833,6 +840,21 @@ app.get("/api/token/:mint/metrics", async (req, res) => {
         out.score = pickNum(inner.score, inner.scratchScore) ?? out.score;
       } catch (e) {
         console.warn(`[token-metrics] bags lookup failed for ${mint}:`, e);
+      }
+    }
+
+    // Fallback for tokens not on Bags (or when Bags has sparse data):
+    // use Jupiter price + Solana supply to fill price and derive market cap.
+    if (out.priceUsd == null) {
+      const jupPrice = await fetchJupiterPriceUsd(mint);
+      if (jupPrice != null) {
+        out.priceUsd = jupPrice;
+      }
+    }
+    if (out.marketCapUsd == null && out.priceUsd != null) {
+      const supplyUi = await fetchTokenSupplyUi(mint);
+      if (supplyUi != null) {
+        out.marketCapUsd = out.priceUsd * supplyUi;
       }
     }
 
@@ -1839,6 +1861,9 @@ function parseBagsPoolStats(pool: unknown): BagsPoolStats {
   const priceUsd = pickNum(
     inner.priceUsd,
     inner.price_usd,
+    inner.priceInUsd,
+    inner.usdPrice,
+    inner.usd_price,
     inner.price,
     inner.tokenPriceUsd,
     inner.lastPriceUsd,
@@ -1846,13 +1871,125 @@ function parseBagsPoolStats(pool: unknown): BagsPoolStats {
   const volume24hUsd = pickNum(
     inner.volume24hUsd,
     inner.volume_24h_usd,
+    inner.volume24h,
+    inner.volume24hUSD,
+    inner.volumeUsd24h,
+    inner.volume_usd_24h,
     inner.volumeUsd,
     inner.volume,
-    inner.volume24h,
     inner.totalVolumeUsd,
     inner.total_volume,
   );
   return { marketCapUsd, priceUsd, volume24hUsd };
+}
+
+function normalizeTokenMintCandidate(input: unknown): string {
+  const raw = String(input ?? "").trim();
+  if (!raw) return "";
+  // Some upstream token symbols are persisted with a trailing "pump".
+  // Bags expects canonical base58 mint addresses.
+  if (raw.toLowerCase().endsWith("pump")) return raw.slice(0, -4);
+  return raw;
+}
+
+function isValidSolanaMintAddress(mint: string): boolean {
+  if (!mint) return false;
+  try {
+    return bs58.decode(mint).length === 32;
+  } catch {
+    return false;
+  }
+}
+
+async function updateNarrativeTokenWithColumnFallback(
+  rowId: string,
+  patch: Record<string, any>,
+): Promise<{ error: { message: string } | null }> {
+  let nextPatch: Record<string, any> = { ...patch };
+  for (let i = 0; i < 8; i++) {
+    const { error } = await supabase.from("narrative_tokens").update(nextPatch).eq("id", rowId);
+    if (!error) return { error: null };
+
+    const msg = String((error as any)?.message ?? "");
+    const missingCol = msg.match(/Could not find the '([^']+)' column/i)?.[1];
+    if (!missingCol || !(missingCol in nextPatch)) {
+      return { error: { message: msg || "unknown update error" } };
+    }
+    delete nextPatch[missingCol];
+    console.warn(`[bags-refresh] missing column "${missingCol}" in schema cache; retrying update`);
+  }
+  return { error: { message: "failed after retrying update without missing columns" } };
+}
+
+async function fetchJupiterPriceUsd(mint: string): Promise<number | null> {
+  if (!mint) return null;
+  const apiKey = (process.env.JUPITER_API_KEY ?? "").trim();
+  const host = apiKey ? "https://api.jup.ag" : "https://lite-api.jup.ag";
+  const headers: Record<string, string> = apiKey ? { "x-api-key": apiKey } : {};
+  const timeoutMs = Number(process.env.JUPITER_HTTP_TIMEOUT_MS ?? 5000);
+
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), timeoutMs);
+    const v2 = await fetch(`${host}/price/v2?ids=${encodeURIComponent(mint)}`, {
+      headers,
+      signal: ctrl.signal,
+    }).finally(() => clearTimeout(t));
+    if (v2.ok) {
+      const body = (await v2.json()) as { data?: Record<string, { price?: number | string }> };
+      const raw = body?.data?.[mint]?.price;
+      const n = typeof raw === "number" ? raw : Number(raw);
+      if (Number.isFinite(n) && n > 0) return n;
+    }
+  } catch {}
+
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), timeoutMs);
+    const v3 = await fetch(`${host}/price/v3?ids=${encodeURIComponent(mint)}`, {
+      headers,
+      signal: ctrl.signal,
+    }).finally(() => clearTimeout(t));
+    if (v3.ok) {
+      const body = (await v3.json()) as Record<string, { usdPrice?: number | string }>;
+      const raw = body?.[mint]?.usdPrice;
+      const n = typeof raw === "number" ? raw : Number(raw);
+      if (Number.isFinite(n) && n > 0) return n;
+    }
+  } catch {}
+
+  return null;
+}
+
+async function fetchTokenSupplyUi(mint: string): Promise<number | null> {
+  if (!mint) return null;
+  const rpcUrl = process.env.HELIUS_RPC_URL || "https://api.mainnet-beta.solana.com";
+  const timeoutMs = Number(process.env.SOLANA_RPC_TIMEOUT_MS ?? 5000);
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), timeoutMs);
+    const r = await fetch(rpcUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      signal: ctrl.signal,
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "getTokenSupply",
+        params: [mint],
+      }),
+    }).finally(() => clearTimeout(t));
+    if (!r.ok) return null;
+    const body = (await r.json()) as {
+      result?: { value?: { uiAmount?: number | null } };
+      error?: { message?: string };
+    };
+    if (body.error) return null;
+    const uiAmount = body.result?.value?.uiAmount;
+    return typeof uiAmount === "number" && Number.isFinite(uiAmount) ? uiAmount : null;
+  } catch {
+    return null;
+  }
 }
 
 async function refreshBagsTokenStatsOnce(): Promise<void> {
@@ -1880,7 +2017,12 @@ async function refreshBagsTokenStatsOnce(): Promise<void> {
   let updated = 0;
   for (const row of rows) {
     try {
-      const mint = row.token_mint;
+      const rawMint = row.token_mint;
+      const mint = normalizeTokenMintCandidate(rawMint);
+      if (!isValidSolanaMintAddress(mint)) {
+        console.warn(`[bags-refresh] skipping invalid mint id=${row.id}: ${String(rawMint)}`);
+        continue;
+      }
       // Only score tokens ending with "bags" as requested
       const shouldScore = String(mint).toLowerCase().endsWith("bags");
 
@@ -1957,10 +2099,10 @@ async function refreshBagsTokenStatsOnce(): Promise<void> {
         console.log(`[bags-refresh] Scored ${mint}: ${score}`);
       }
 
-      const { error: upErr } = await supabase
-        .from("narrative_tokens")
-        .update(patch)
-        .eq("id", row.id);
+      if (mint !== rawMint) {
+        patch.token_mint = mint;
+      }
+      const { error: upErr } = await updateNarrativeTokenWithColumnFallback(String(row.id), patch);
 
       if (upErr) {
         console.warn(`[bags-refresh] update fail id=${row.id}:`, upErr.message);
@@ -1993,37 +2135,6 @@ function startBagsRefresher(): void {
 app.post("/api/admin/bags/refresh-tokens", async (_req, res) => {
   await refreshBagsTokenStatsOnce();
   res.json({ ok: true });
-});
-
-
-// ── Admin: Backfill Narrative Pipeline ───────────────────────
-app.post("/api/admin/backfill-narratives", async (req, res) => {
-  try {
-    const limit = Number(req.query.limit ?? 10);
-    const { data: tweets, error } = await supabase
-      .from("tweets")
-      .select("tweet_id, content, creator_handle")
-      .order("posted_at", { ascending: false })
-      .limit(limit);
-
-    if (error) throw error;
-
-    const results = [];
-    for (const tweet of (tweets ?? [])) {
-      console.log(`[Backfill] Processing tweet ${tweet.tweet_id}...`);
-      await runNarrativePipeline({
-        tweet_id: String(tweet.tweet_id),
-        content: String(tweet.content),
-        creator_handle: tweet.creator_handle as string | undefined,
-      }).catch(err => console.error(`[Backfill] Fail for ${tweet.tweet_id}:`, err));
-      results.push(tweet.tweet_id);
-    }
-
-    res.json({ success: true, processed: results.length, tweet_ids: results });
-  } catch (err) {
-    console.error("Backfill error:", err);
-    res.status(500).json({ error: "Backfill failed" });
-  }
 });
 
 app.listen(PORT, () => {

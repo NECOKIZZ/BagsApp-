@@ -24,6 +24,7 @@ export type FeedFilter = "all" | "noTokens" | "highScore";
  * camelCase. Keep these in sync with server/index.ts:/api/feed.
  */
 type ServerTweet = Omit<TweetCardProps, "tweetId" | "image" | "linkPreview"> & {
+  tweetId?: string | null;
   tweet_id?: string | null;
   image_url?: string | null;
   image?: string | null;
@@ -48,9 +49,10 @@ export async function fetchFeed(filter: FeedFilter): Promise<TweetCardProps[]> {
   const data = (await res.json()) as FeedResponse;
 
   return data.tweets.map(
-    ({ tweet_id, image_url, image, link_preview, ...rest }): TweetCardProps => ({
+    ({ tweetId, tweet_id, image_url, image, link_preview, ...rest }): TweetCardProps => ({
       ...rest,
-      tweetId: tweet_id ?? null,
+      // Support both camelCase and snake_case while backend transitions.
+      tweetId: tweetId ?? tweet_id ?? null,
       image: image_url ?? image ?? undefined,
       linkPreview: link_preview ?? null,
     }),

@@ -1,4 +1,5 @@
 const DEFAULT_BASE = "https://public-api-v2.bags.fm/api/v1";
+const DEFAULT_BAGS_TIMEOUT_MS = 8000;
 
 function normalizeApiKey(raw: string | undefined): string {
   let k = raw?.trim() ?? "";
@@ -24,6 +25,11 @@ export function bagsConfigured(): boolean {
 export function bagsHttpDebugEnabled(): boolean {
   const v = process.env.LOG_BAGS_HTTP?.trim().toLowerCase();
   return v === "1" || v === "true" || v === "yes";
+}
+
+function bagsTimeoutMs(): number {
+  const raw = Number(process.env.BAGS_HTTP_TIMEOUT_MS ?? DEFAULT_BAGS_TIMEOUT_MS);
+  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_BAGS_TIMEOUT_MS;
 }
 
 function bagsHttpLog(method: string, path: string, extra?: string) {
@@ -76,8 +82,15 @@ export async function bagsJson<T>(
     body = JSON.stringify(init.json);
   }
 
+  const ctrl = new AbortController();
+  const timeout = setTimeout(() => ctrl.abort(), bagsTimeoutMs());
   bagsHttpLog(init.method ?? "GET", path);
-  const res = await fetch(`${baseUrl}${path}`, { ...init, headers, body });
+  const res = await fetch(`${baseUrl}${path}`, {
+    ...init,
+    headers,
+    body,
+    signal: ctrl.signal,
+  }).finally(() => clearTimeout(timeout));
   const data = (await parseJson(res)) as BagsErrorBody & { response?: unknown; success?: boolean };
 
   if (!res.ok || data.success === false) {
@@ -134,12 +147,15 @@ export async function bagsCreateTokenInfo(params: {
   form.append("description", params.description);
   form.append("imageUrl", params.imageUrl);
 
+  const ctrl = new AbortController();
+  const timeout = setTimeout(() => ctrl.abort(), bagsTimeoutMs());
   bagsHttpLog("POST", "/token-launch/create-token-info", "(multipart)");
   const res = await fetch(`${baseUrl}/token-launch/create-token-info`, {
     method: "POST",
     headers: { "x-api-key": apiKey },
     body: form,
-  });
+    signal: ctrl.signal,
+  }).finally(() => clearTimeout(timeout));
 
   const data = (await parseJson(res)) as CreateTokenInfoResult & BagsErrorBody & { response?: unknown };
   if (!res.ok || (data as { success?: boolean }).success === false) {
@@ -316,11 +332,14 @@ export async function bagsPingAuth(): Promise<BagsAuthPingResult> {
   }
 
   try {
+    const ctrl = new AbortController();
+    const timeout = setTimeout(() => ctrl.abort(), bagsTimeoutMs());
     bagsHttpLog("GET", "/solana/bags/pools", "(auth ping)");
     const res = await fetch(`${baseUrl}/solana/bags/pools`, {
       method: "GET",
       headers: { "x-api-key": apiKey },
-    });
+      signal: ctrl.signal,
+    }).finally(() => clearTimeout(timeout));
     const body = (await parseJson(res)) as BagsErrorBody;
     const bagsError = typeof body.error === "string" ? body.error : undefined;
 
