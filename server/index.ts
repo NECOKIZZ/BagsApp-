@@ -974,9 +974,13 @@ async function persistTokenMetricsToDb(
 
   // Jupiter quality signals — persist verified flag explicitly (false is
   // meaningful; null means "we never asked"). organicScore only when fetched.
+  // Token launch time only set; the cron also writes it but only if missing,
+  // and we don't have the existing row's launched_at here so let the unique
+  // pattern (only-if-missing) live in the cron path.
   if (jupMeta) {
     patch.jupiter_verified = jupMeta.verified;
     if (jupMeta.organicScore != null) patch.jupiter_organic_score = jupMeta.organicScore;
+    if (jupMeta.launchedAt) patch.launched_at = jupMeta.launchedAt;
   }
 
   // Try the update with all known columns; if Postgrest rejects unknown columns
@@ -2509,6 +2513,10 @@ type JupiterTokenMeta = {
   holderCount: number | null;
   organicScore: number | null;
   verified: boolean;
+  // ISO timestamp of the token's first liquidity pool — i.e. its on-chain
+  // launch time. Available from Jupiter's `firstPool.createdAt` field on most
+  // tokens; null when Jupiter doesn't expose it.
+  launchedAt: string | null;
 };
 
 async function fetchJupiterTokenMeta(mint: string): Promise<JupiterTokenMeta | null> {
@@ -2559,6 +2567,26 @@ async function fetchJupiterTokenMeta(mint: string): Promise<JupiterTokenMeta | n
           if (buy1 == null && sell1 == null) return null;
           return ((buy1 ?? 0) + (sell1 ?? 0)) * 24;
         })();
+        // Token launch time from Jupiter's firstPool.createdAt (or any plausible
+        // alias). Validated as a parseable date so we never persist garbage.
+        const launchedAt = (() => {
+          const firstPool = (hit.firstPool ?? {}) as Record<string, unknown>;
+          const candidates = [
+            firstPool.createdAt,
+            firstPool.created_at,
+            firstPool.creationDate,
+            hit.firstSeenAt,
+            hit.first_seen_at,
+            hit.createdAt,
+            hit.created_at,
+          ];
+          for (const c of candidates) {
+            if (typeof c !== "string") continue;
+            const t = Date.parse(c);
+            if (Number.isFinite(t) && t > 0) return new Date(t).toISOString();
+          }
+          return null;
+        })();
         return {
           mcap: pickNum(hit.mcap, hit.marketCap),
           fdv: pickNum(hit.fdv),
@@ -2567,6 +2595,7 @@ async function fetchJupiterTokenMeta(mint: string): Promise<JupiterTokenMeta | n
           holderCount: pickNum(hit.holderCount, hit.holders),
           organicScore: pickNum(hit.organicScore),
           verified: hit.isVerified === true,
+          launchedAt,
         };
       })(),
     };
@@ -2587,7 +2616,7 @@ async function refreshJupiterTokenMetadataOnce(): Promise<void> {
   // Pull tokens that are NOT on Bags (or unknown) — they need Jupiter metadata.
   const { data, error } = await supabase
     .from("narrative_tokens")
-    .select("id, token_mint, token_name, token_ticker, logo_url, is_on_bags, top1_holder_pct, top5_holder_pct")
+    .select("id, token_mint, token_name, token_ticker, logo_url, is_on_bags, top1_holder_pct, top5_holder_pct, launched_at")
     .not("token_mint", "is", null)
     .or("is_on_bags.is.null,is_on_bags.eq.false")
     .limit(limit);
@@ -2663,6 +2692,10 @@ async function refreshJupiterTokenMetadataOnce(): Promise<void> {
       if (meta.volume24hUsd != null) patch.total_volume = meta.volume24hUsd;
       if (meta.liquidityUsd != null) patch.liquidity = meta.liquidityUsd;
       if (meta.holderCount != null) patch.holders = meta.holderCount;
+      // Token launch time — only persist when missing so we don't overwrite
+      // a more accurate value (e.g. a Bags-launched token whose launched_at
+      // was set by the launch flow at /api/launches).
+      if (meta.launchedAt && !row.launched_at) patch.launched_at = meta.launchedAt;
       // Persist Jupiter quality signals so bags-refresh can apply them too
       // for tokens that exist on both sources.
       patch.jupiter_verified = meta.verified;
