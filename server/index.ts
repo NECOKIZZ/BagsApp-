@@ -582,11 +582,13 @@ app.get("/api/feed", async (req, res) => {
       const enriched = uniqueTokens.map((t) => {
         const change24h = t.returns || "0%";
         const createdAt = t.launched_at;
+        const isOnBags = Boolean(t.is_on_bags);
         return {
           name: t.token_ticker || t.token_name || "UNKNOWN",
           mint: t.token_mint,
           launched_here: Boolean(t.launched_here),
-          is_on_bags: Boolean(t.is_on_bags),
+          is_on_bags: isOnBags,
+          isOnBags, // camelCase alias for the TerminalToken interface
           score: t.score || t.match_score || 0,
           time: toRelativeTime(createdAt),
           createdAt: createdAt,

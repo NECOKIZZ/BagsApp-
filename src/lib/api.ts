@@ -71,6 +71,7 @@ export interface TerminalToken {
   returns: string;
   narrative?: string | null;
   logoUrl?: string | null;
+  isOnBags?: boolean;
 }
 
 export interface TerminalResponse {

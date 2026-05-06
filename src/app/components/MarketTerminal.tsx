@@ -50,6 +50,21 @@ export function MarketTerminal({ tweets, narrative, tweetId }: MarketTerminalPro
   const scoreHsl = (score: number, l = 55) => `hsl(${scoreHue(score)}, 80%, ${l}%)`;
   const scoreShadow = (score: number) => `0 0 6px hsla(${scoreHue(score)}, 80%, 55%, 0.55)`;
 
+  // Returns a SVG asset path for the launch platform, or null if neither
+  // pump.fun nor bags. We identify pump.fun via the vanity-suffix `pump`
+  // baked into every pump-launched mint, and bags via either the explicit
+  // `is_on_bags` flag or the (less common) `bags` vanity suffix.
+  const platformIcon = (token: TerminalToken): { src: string; label: string } | null => {
+    const mint = (token.mint ?? "").toLowerCase();
+    if (token.isOnBags || mint.endsWith("bags")) {
+      return { src: "/platforms/bags.svg", label: "Launched on bags" };
+    }
+    if (mint.endsWith("pump")) {
+      return { src: "/platforms/pump.svg", label: "Launched on pump.fun" };
+    }
+    return null;
+  };
+
   const getChangeColor = (change?: string | null) => {
     if (!change || typeof change !== "string") return "text-[#5a6078]";
     const trimmed = change.trim();
@@ -136,6 +151,18 @@ export function MarketTerminal({ tweets, narrative, tweetId }: MarketTerminalPro
                 >
                   {token.name || "???"}
                 </button>
+                {(() => {
+                  const p = platformIcon(token);
+                  if (!p) return null;
+                  return (
+                    <img
+                      src={p.src}
+                      alt={p.label}
+                      title={p.label}
+                      className="w-3.5 h-3.5 shrink-0 opacity-90"
+                    />
+                  );
+                })()}
               </div>
 
               <div className="flex items-center justify-end gap-1.5 w-12">
