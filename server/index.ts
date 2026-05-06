@@ -1892,6 +1892,80 @@ app.post("/api/admin/twitterapi/backfill-kinds", async (req, res) => {
   res.json({ ok: true, ...result });
 });
 
+/**
+ * Replay a single tweet through the narrative pipeline and report the
+ * resulting narrative_tokens rows. Useful for end-to-end test runs against
+ * known historical tweets without waiting for a live ingestion event.
+ *
+ * POST body: { tweet_id: string }
+ *   or:      { handle?: string }  → picks the most recent tweet from that handle
+ *   or:      {}                   → picks the most recent tweet overall
+ */
+app.post("/api/admin/replay-tweet", async (req, res) => {
+  try {
+    const body = (req.body ?? {}) as { tweet_id?: unknown; handle?: unknown };
+    const tweetIdInput = typeof body.tweet_id === "string" ? body.tweet_id.trim() : "";
+    const handleInput = typeof body.handle === "string"
+      ? body.handle.trim().replace(/^@/, "").toLowerCase()
+      : "";
+
+    let query = supabase
+      .from("tweets")
+      .select("tweet_id, content, creator_handle, posted_at, narrative")
+      .order("posted_at", { ascending: false })
+      .limit(1);
+    if (tweetIdInput) query = query.eq("tweet_id", tweetIdInput);
+    else if (handleInput) query = query.ilike("creator_handle", handleInput);
+
+    const { data: tweetRows, error: fetchErr } = await query;
+    if (fetchErr) {
+      return res.status(500).json({ error: "Tweet lookup failed", detail: fetchErr.message });
+    }
+    const tweet = tweetRows?.[0];
+    if (!tweet) {
+      return res.status(404).json({ error: "No matching tweet found" });
+    }
+
+    const tweetId = String(tweet.tweet_id);
+    const content = String(tweet.content ?? "");
+    const handle = tweet.creator_handle ? String(tweet.creator_handle) : undefined;
+
+    console.log(`[replay-tweet] Replaying ${tweetId} (@${handle ?? "unknown"})`);
+
+    // Wipe prior narrative_tokens for this tweet so we observe a clean run.
+    await supabase.from("narrative_tokens").delete().eq("tweet_id", tweetId);
+
+    // Run the pipeline synchronously so we can return the result.
+    await runNarrativePipeline({ tweet_id: tweetId, content, creator_handle: handle });
+
+    // Read back the freshly-written rows.
+    const { data: tokens, error: readErr } = await supabase
+      .from("narrative_tokens")
+      .select("*")
+      .eq("tweet_id", tweetId)
+      .order("score", { ascending: false });
+    if (readErr) {
+      return res.status(500).json({ error: "Read-back failed", detail: readErr.message });
+    }
+
+    res.json({
+      ok: true,
+      tweet: {
+        tweet_id: tweetId,
+        creator_handle: handle ?? null,
+        posted_at: tweet.posted_at ?? null,
+        content_preview: content.slice(0, 200),
+        narrative: tweet.narrative ?? null,
+      },
+      tokens: tokens ?? [],
+      hint: "Score will refine on the next bags-refresh / jupiter-meta cron cycle (or hit /api/admin/bags/refresh-tokens and /api/admin/jupiter/refresh-metadata to trigger immediately).",
+    });
+  } catch (err) {
+    console.error("[replay-tweet] error:", err);
+    res.status(500).json({ error: "Internal error", detail: err instanceof Error ? err.message : String(err) });
+  }
+});
+
 app.post("/api/admin/backfill-narratives", async (req, res) => {
   const limit = Math.min(Number(req.body?.limit ?? 5), 20); // Cap at 20 to manage costs
   const { data: tweets, error } = await supabase
