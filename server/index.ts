@@ -2537,13 +2537,36 @@ async function fetchJupiterTokenMeta(mint: string): Promise<JupiterTokenMeta | n
       symbol: (hit.symbol as string | null) ?? null,
       logoURI: (hit.icon as string | null) ?? (hit.logoURI as string | null) ?? null,
       usdPrice: pickNum(hit.usdPrice, hit.price),
-      mcap: pickNum(hit.mcap, hit.marketCap),
-      fdv: pickNum(hit.fdv),
-      liquidityUsd: pickNum(hit.liquidity),
-      volume24hUsd: pickNum((hit.stats24h as Record<string, unknown> | undefined)?.volume, hit.volume24h),
-      holderCount: pickNum(hit.holderCount, hit.holders),
-      organicScore: pickNum(hit.organicScore),
-      verified: hit.isVerified === true,
+      // Jupiter's stats24h block typically exposes buyVolume + sellVolume rather
+      // than a single `volume` field. Sum them when that's the case, fall back
+      // to any flat field on the hit. Also try stats1h × 24 for very fresh
+      // tokens whose 24h window hasn't filled yet.
+      ...(function () {
+        const s24 = (hit.stats24h ?? {}) as Record<string, unknown>;
+        const s1 = (hit.stats1h ?? {}) as Record<string, unknown>;
+        const flatVol = pickNum(s24.volume, s24.totalVolume, s24.volumeUsd, hit.volume24h, hit.volumeUsd, hit.volume);
+        const sumVol = (() => {
+          const buy = pickNum(s24.buyVolume, s24.buyVolumeUsd);
+          const sell = pickNum(s24.sellVolume, s24.sellVolumeUsd);
+          if (buy == null && sell == null) return null;
+          return (buy ?? 0) + (sell ?? 0);
+        })();
+        const oneHourEstimate = (() => {
+          const buy1 = pickNum(s1.buyVolume, s1.buyVolumeUsd, s1.volume);
+          const sell1 = pickNum(s1.sellVolume, s1.sellVolumeUsd);
+          if (buy1 == null && sell1 == null) return null;
+          return ((buy1 ?? 0) + (sell1 ?? 0)) * 24;
+        })();
+        return {
+          mcap: pickNum(hit.mcap, hit.marketCap),
+          fdv: pickNum(hit.fdv),
+          liquidityUsd: pickNum(hit.liquidity),
+          volume24hUsd: flatVol ?? sumVol ?? oneHourEstimate,
+          holderCount: pickNum(hit.holderCount, hit.holders),
+          organicScore: pickNum(hit.organicScore),
+          verified: hit.isVerified === true,
+        };
+      })(),
     };
   } catch {
     return null;
@@ -2557,11 +2580,12 @@ async function fetchJupiterTokenMeta(mint: string): Promise<JupiterTokenMeta | n
  */
 async function refreshJupiterTokenMetadataOnce(): Promise<void> {
   const limit = Number(process.env.JUPITER_REFRESH_LIMIT ?? 50);
+  const rpcUrl = process.env.HELIUS_RPC_URL || "https://api.mainnet-beta.solana.com";
 
   // Pull tokens that are NOT on Bags (or unknown) — they need Jupiter metadata.
   const { data, error } = await supabase
     .from("narrative_tokens")
-    .select("id, token_mint, token_name, token_ticker, logo_url, is_on_bags")
+    .select("id, token_mint, token_name, token_ticker, logo_url, is_on_bags, top1_holder_pct, top5_holder_pct")
     .not("token_mint", "is", null)
     .or("is_on_bags.is.null,is_on_bags.eq.false")
     .limit(limit);
@@ -2589,6 +2613,22 @@ async function refreshJupiterTokenMetadataOnce(): Promise<void> {
         continue;
       }
 
+      // Concentration check: only when we don't already have it. RPC calls
+      // are expensive; we don't recompute every cycle. Failures (rate-limit,
+      // unsupported program) silently return zeros — getConcentrationData
+      // already logs internally.
+      let top1: number | null = row.top1_holder_pct ?? null;
+      let top5: number | null = row.top5_holder_pct ?? null;
+      let concFlag: boolean | null = null;
+      if (top1 == null) {
+        const conc = await getConcentrationData(mint, rpcUrl);
+        if (conc.top1Pct > 0 || conc.top5Pct > 0) {
+          top1 = conc.top1Pct;
+          top5 = conc.top5Pct;
+          concFlag = conc.flag;
+        }
+      }
+
       // Run the unified Scratch Score with whatever data Jupiter gave us.
       // For non-Bags tokens, lifecycle/socials/buyer-rank are absent — the
       // formula handles that and uses verified + organicScore as partial
@@ -2598,6 +2638,8 @@ async function refreshJupiterTokenMetadataOnce(): Promise<void> {
         volume24h: meta.volume24hUsd ?? 0,
         liquidity: meta.liquidityUsd ?? 0,
         holders: meta.holderCount ?? 0,
+        top1HolderPct: top1 ?? undefined,
+        top5HolderPct: top5 ?? undefined,
         jupiterVerified: meta.verified === true,
         jupiterOrganicScore: meta.organicScore ?? undefined,
       });
@@ -2605,6 +2647,11 @@ async function refreshJupiterTokenMetadataOnce(): Promise<void> {
       const patch: Record<string, any> = {
         updated_at: new Date().toISOString(),
       };
+      if (top1 != null && row.top1_holder_pct == null) {
+        patch.top1_holder_pct = top1;
+        patch.top5_holder_pct = top5;
+        if (concFlag != null) patch.concentration_flag = concFlag;
+      }
       if (meta.logoURI && !row.logo_url) patch.logo_url = meta.logoURI;
       if (meta.name && !row.token_name) patch.token_name = meta.name;
       if (meta.symbol && !row.token_ticker) patch.token_ticker = meta.symbol;
