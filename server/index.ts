@@ -898,6 +898,13 @@ app.get("/api/token/:mint/metrics", async (req, res) => {
       }
     }
 
+    // Persist freshly-fetched metadata back to narrative_tokens so the
+    // feed/terminal endpoints (which read straight from DB) stay in sync
+    // without relying solely on the 10-min cron jobs. Fire-and-forget.
+    void persistTokenMetricsToDb(mint, out).catch((e) =>
+      console.warn(`[token-metrics] persist failed for ${mint}:`, e instanceof Error ? e.message : String(e)),
+    );
+
     // Cache the assembled response for METRICS_CACHE_TTL_MS.
     metricsCache.set(mint, { ts: Date.now(), data: out });
     // Soft cap on cache size so a runaway crawler can't OOM the process.
@@ -912,6 +919,60 @@ app.get("/api/token/:mint/metrics", async (req, res) => {
     res.status(500).json({ error: "Failed to fetch token metrics" });
   }
 });
+
+/**
+ * Writes the assembled token metrics back to narrative_tokens.
+ * Updates rows whose token_mint matches; safe no-op if no rows exist.
+ * Only writes non-null fields so we never blank out existing data.
+ */
+async function persistTokenMetricsToDb(
+  mint: string,
+  out: {
+    isOnBags: boolean;
+    tokenName: string | null;
+    tokenTicker: string | null;
+    logoUrl: string | null;
+    marketCapUsd: number | null;
+    priceUsd: number | null;
+    volume24hUsd: number | null;
+    liquidityUsd: number | null;
+    holders: number | null;
+    score: number | null;
+  },
+): Promise<void> {
+  const patch: Record<string, unknown> = {
+    is_on_bags: out.isOnBags,
+    updated_at: new Date().toISOString(),
+  };
+  if (out.tokenName) patch.token_name = out.tokenName;
+  if (out.tokenTicker) patch.token_ticker = out.tokenTicker;
+  if (out.logoUrl) patch.logo_url = out.logoUrl;
+  if (out.marketCapUsd != null) patch.current_mcap = out.marketCapUsd;
+  if (out.priceUsd != null) patch.current_price = out.priceUsd;
+  if (out.volume24hUsd != null) patch.total_volume = out.volume24hUsd;
+  if (out.liquidityUsd != null) patch.liquidity = out.liquidityUsd;
+  if (out.holders != null) patch.holders = out.holders;
+  if (out.score != null) patch.score = out.score;
+
+  // Try the update with all known columns; if Postgrest rejects unknown columns
+  // (schema cache miss), strip them and retry. Same defensive pattern as
+  // updateNarrativeTokenWithColumnFallback but keyed on token_mint.
+  let nextPatch: Record<string, unknown> = { ...patch };
+  for (let i = 0; i < 8; i++) {
+    const { error } = await supabase
+      .from("narrative_tokens")
+      .update(nextPatch)
+      .eq("token_mint", mint);
+    if (!error) return;
+    const msg = String((error as { message?: string }).message ?? "");
+    const missingCol = msg.match(/Could not find the '([^']+)' column/i)?.[1];
+    if (!missingCol || !(missingCol in nextPatch)) {
+      console.warn(`[token-metrics] persist update error for ${mint}:`, msg);
+      return;
+    }
+    delete nextPatch[missingCol];
+  }
+}
 
 // ── Launches (Bags + Supabase) ───────────────────────────────
 app.post("/api/launches", async (req, res) => {
@@ -1950,6 +2011,7 @@ function isValidSolanaMintAddress(mint: string): boolean {
 async function updateNarrativeTokenWithColumnFallback(
   rowId: string,
   patch: Record<string, any>,
+  logPrefix: string = "narrative-tokens",
 ): Promise<{ error: { message: string } | null }> {
   let nextPatch: Record<string, any> = { ...patch };
   for (let i = 0; i < 8; i++) {
@@ -1962,7 +2024,7 @@ async function updateNarrativeTokenWithColumnFallback(
       return { error: { message: msg || "unknown update error" } };
     }
     delete nextPatch[missingCol];
-    console.warn(`[bags-refresh] missing column "${missingCol}" in schema cache; retrying update`);
+    console.warn(`[${logPrefix}] missing column "${missingCol}" in schema cache; retrying update`);
   }
   return { error: { message: "failed after retrying update without missing columns" } };
 }
@@ -2168,7 +2230,7 @@ async function refreshBagsTokenStatsOnce(): Promise<void> {
       if (mint !== rawMint) {
         patch.token_mint = mint;
       }
-      const { error: upErr } = await updateNarrativeTokenWithColumnFallback(String(row.id), patch);
+      const { error: upErr } = await updateNarrativeTokenWithColumnFallback(String(row.id), patch, "bags-refresh");
 
       if (upErr) {
         console.warn(`[bags-refresh] update fail id=${row.id}:`, upErr.message);
@@ -2322,7 +2384,7 @@ async function refreshJupiterTokenMetadataOnce(): Promise<void> {
       if (meta.holderCount != null) patch.holders = meta.holderCount;
       if (jupScore > 0) patch.score = jupScore;
 
-      const { error: upErr } = await updateNarrativeTokenWithColumnFallback(String(row.id), patch);
+      const { error: upErr } = await updateNarrativeTokenWithColumnFallback(String(row.id), patch, "jupiter-meta");
       if (upErr) {
         console.warn(`[jupiter-meta] update fail id=${row.id}:`, upErr.message);
       } else {
