@@ -356,7 +356,15 @@ type StoredMatch = {
 };
 
 /** Normalized result shape so the matching loop is provider-agnostic. */
-type SearchHit = { mint: string; name: string | null; symbol: string; quality: number };
+type SearchHit = {
+  mint: string;
+  name: string | null;
+  symbol: string;
+  quality: number;
+  // Optional Jupiter-native signals (only set when source is Jupiter).
+  verified?: boolean;
+  organicScore?: number;
+};
 
 /**
  * Search Jupiter's lite token-search API for a query string.
@@ -381,7 +389,7 @@ async function jupiterSearchTokens(query: string): Promise<SearchHit[]> {
     // pushes Bags memecoins (usually unverified, low organic) off the list,
     // which defeats the whole point of the Bags filter we apply downstream.
     return data
-      .map((r) => {
+      .map<SearchHit | null>((r) => {
         const mint = pickStr(r, "id", "mint", "address");
         const name = pickStr(r, "name");
         const symbol = pickStr(r, "symbol", "ticker");
@@ -391,7 +399,7 @@ async function jupiterSearchTokens(query: string): Promise<SearchHit[]> {
         // Quality is kept as a tiebreaker signal for downstream scoring,
         // but we no longer use it to filter or reorder Jupiter's results.
         const quality = (verified ? 50 : 0) + Math.min(50, Math.max(0, organic));
-        return { mint, name, symbol, quality };
+        return { mint, name, symbol, quality, verified, organicScore: organic };
       })
       .filter((x): x is SearchHit => x !== null)
       .slice(0, MAX_RESULTS_PER_TERM);
@@ -402,13 +410,6 @@ async function jupiterSearchTokens(query: string): Promise<SearchHit[]> {
 }
 
 import { bagsGetPoolByMint } from "./bagsClient";
-
-function calculateJupiterScore(organicScore: number, verified: boolean): number {
-  let score = 30; // base for Jupiter
-  if (verified) score += 30;
-  score += Math.min(40, (organicScore || 0) / 2);
-  return Math.round(score);
-}
 
 /**
  * Three-step token search:
@@ -563,7 +564,18 @@ async function searchAndScoreTokens(
 
     for (const h of offBags) {
       if (bagsMatches.has(h.mint) || jupiterOnlyMatches.has(h.mint)) continue;
-      const jupScore = calculateJupiterScore((h as any).organicScore || 0, (h as any).verified || false);
+      // Score Jupiter-only tokens through the unified formula. Without market
+      // data at insert time we lean on Jupiter's verified + organicScore
+      // signals; the cron will re-score later once mcap/volume/holders are
+      // populated.
+      const jupScore = calculateScratchScore({
+        mcap: 0,
+        volume24h: 0,
+        liquidity: 0,
+        holders: 0,
+        jupiterVerified: h.verified === true,
+        jupiterOrganicScore: h.organicScore,
+      });
       const matchScore = Math.min(100, Math.round(aiScore + h.quality / 4));
       jupiterOnlyMatches.set(h.mint, {
         tweet_id,

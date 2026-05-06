@@ -2365,11 +2365,18 @@ async function refreshJupiterTokenMetadataOnce(): Promise<void> {
         continue;
       }
 
-      // Jupiter score: organic + verified bonus, capped at 100.
-      const jupScore = Math.min(
-        100,
-        Math.round((meta.verified ? 30 : 0) + (meta.organicScore ?? 0)),
-      );
+      // Run the unified Scratch Score with whatever data Jupiter gave us.
+      // For non-Bags tokens, lifecycle/socials/buyer-rank are absent — the
+      // formula handles that and uses verified + organicScore as partial
+      // substitutes (capped so Jupiter-only can't fake a perfect score).
+      const jupScore = calculateScratchScore({
+        mcap: meta.mcap ?? meta.fdv ?? 0,
+        volume24h: meta.volume24hUsd ?? 0,
+        liquidity: meta.liquidityUsd ?? 0,
+        holders: meta.holderCount ?? 0,
+        jupiterVerified: meta.verified === true,
+        jupiterOrganicScore: meta.organicScore ?? undefined,
+      });
 
       const patch: Record<string, any> = {
         updated_at: new Date().toISOString(),
@@ -2381,6 +2388,7 @@ async function refreshJupiterTokenMetadataOnce(): Promise<void> {
       if (meta.mcap != null) patch.current_mcap = meta.mcap;
       else if (meta.fdv != null) patch.current_mcap = meta.fdv;
       if (meta.volume24hUsd != null) patch.total_volume = meta.volume24hUsd;
+      if (meta.liquidityUsd != null) patch.liquidity = meta.liquidityUsd;
       if (meta.holderCount != null) patch.holders = meta.holderCount;
       if (jupScore > 0) patch.score = jupScore;
 
