@@ -159,6 +159,31 @@ export function calculateScratchScore(token: TokenData): number {
 }
 
 /**
+ * Normalize Bags lifecycle values to the scoring enum.
+ * Bags uses its own terminology; this maps whatever it returns
+ * to the 4 canonical values the formula understands.
+ */
+export function normalizeBagsLifecycle(raw: unknown): 'PRE_LAUNCH' | 'PRE_GRAD' | 'MIGRATING' | 'MIGRATED' | undefined {
+  if (!raw || typeof raw !== "string") return undefined;
+  const v = raw.trim().toUpperCase().replace(/\s+/g, "_").replace(/-/g, "_");
+  if (v === "MIGRATED" || v === "GRADUATED" || v === "LIVE" || v === "COMPLETE" || v === "DONE" || v === "FINISHED" || v === "POST_MIGRATION") {
+    return "MIGRATED";
+  }
+  if (v === "MIGRATING" || v === "IN_MIGRATION" || v === "MIGRATION" || v === "TRANSITIONING" || v === "POST_GRAD") {
+    return "MIGRATING";
+  }
+  if (v === "PRE_GRAD" || v === "PREGRAD" || v === "BONDING" || v === "BONDING_CURVE" || v === "CURVE" || v === "ACTIVE" || v === "PRE_MIGRATION" || v === "PRE_GRADUATION") {
+    return "PRE_GRAD";
+  }
+  if (v === "PRE_LAUNCH" || v === "PRELAUNCH" || v === "PENDING" || v === "UPCOMING" || v === "NOT_STARTED" || v === "DRAFT") {
+    return "PRE_LAUNCH";
+  }
+  // If Bags returns something we don't recognize, return undefined so the
+  // formula treats it as missing (0 pts) rather than guessing wrong.
+  return undefined;
+}
+
+/**
  * Maps a numerical score to a label and color for the UI.
  */
 export function getScoreLabel(score: number): { label: string, color: string } {

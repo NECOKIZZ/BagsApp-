@@ -38,6 +38,7 @@ export interface TweetCardProps {
   tweetId?: string | null;
   avatar: string;
   avatarColor: string;
+  avatarUrl?: string | null;
   name: string;
   handle: string;
   time: string;
@@ -172,6 +173,7 @@ export function TweetCard({
   tweetId,
   avatar,
   avatarColor,
+  avatarUrl,
   name,
   handle,
   time,
@@ -185,7 +187,7 @@ export function TweetCard({
   image,
   linkPreview,
   onSelect,
-  isSelected = false,
+  isSelected,
 }: TweetCardProps) {
   const navigate = useNavigate();
   const [isExpanded, setIsExpanded] = useState(false);
@@ -218,9 +220,23 @@ export function TweetCard({
 
         <div className="flex items-start justify-between">
           <div className="flex items-center gap-3">
+            {avatarUrl ? (
+              <img
+                src={avatarUrl}
+                alt={name}
+                className="w-10 h-10 rounded-full object-cover flex-shrink-0 border border-[#1a1f2e]"
+                onError={(e) => {
+                  // Fallback to initials on image load failure
+                  (e.target as HTMLImageElement).style.display = "none";
+                  const fallback = e.currentTarget.parentElement?.querySelector("[data-avatar-fallback]") as HTMLElement | null;
+                  if (fallback) fallback.style.display = "flex";
+                }}
+              />
+            ) : null}
             <div
+              data-avatar-fallback
               className="w-10 h-10 rounded-full flex items-center justify-center text-sm font-semibold flex-shrink-0"
-              style={{ backgroundColor: avatarColor, color: "#0C447C" }}
+              style={{ backgroundColor: avatarColor, color: "#0C447C", display: avatarUrl ? "none" : "flex" }}
             >
               {avatar}
             </div>

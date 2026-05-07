@@ -13,6 +13,7 @@ export type FeedToken = {
 export type FeedTweet = {
   avatar: string;
   avatarColor: string;
+  avatarUrl?: string;
   name: string;
   handle: string;
   time: string;
@@ -30,6 +31,7 @@ export const feedTweets: FeedTweet[] = [
   {
     avatar: "MR",
     avatarColor: "#B5D4F4",
+    avatarUrl: "/creators/murad_m.png",
     name: "Murad",
     handle: "@murad_m",
     time: "2m ago",
@@ -75,6 +77,7 @@ export const feedTweets: FeedTweet[] = [
   {
     avatar: "AB",
     avatarColor: "#F5C4B3",
+    avatarUrl: "/creators/blknoiz06.png",
     name: "ansem",
     handle: "@blknoiz06",
     time: "7m ago",
@@ -111,6 +114,7 @@ export const feedTweets: FeedTweet[] = [
   {
     avatar: "KT",
     avatarColor: "#9FE1CB",
+    avatarUrl: "/creators/kaitoai.png",
     name: "kaito",
     handle: "@kaitoai",
     time: "14m ago",
@@ -126,6 +130,7 @@ export const feedTweets: FeedTweet[] = [
   {
     avatar: "CB",
     avatarColor: "#FAC775",
+    avatarUrl: "/creators/cobie.png",
     name: "cobie",
     handle: "@cobie",
     time: "28m ago",

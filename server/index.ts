@@ -19,7 +19,7 @@ import {
   BagsApiError,
   getBagsConfig,
 } from "./bagsClient";
-import { calculateScratchScore, getConcentrationData } from "./scoring";
+import { calculateScratchScore, getConcentrationData, normalizeBagsLifecycle } from "./scoring";
 import { fetchLinkPreview } from "./linkPreview";
 import { runNarrativePipeline, startFeedCacheRefresher } from "./narrativePipeline";
 
@@ -641,10 +641,13 @@ app.get("/api/feed", async (req, res) => {
               : startsWithCommentTag(plainText)
                 ? "comment"
                 : "tweet";
+      const handleClean = String(creator.handle ?? "").replace(/^@/, "").toLowerCase();
+      const avatarUrl = creator.avatar_url || (handleClean ? `/creators/${handleClean}.png` : null);
       return {
         tweetId: row.tweet_id ?? row.id ?? null,
         avatar: String((creator.display_name ?? creator.handle ?? "NA")).slice(0, 2).toUpperCase(),
         avatarColor: "#B5D4F4",
+        avatarUrl,
         name: creator.display_name ?? creator.handle ?? "Unknown",
         handle: creator.handle ? `@${String(creator.handle).replace(/^@/, "")}` : "@unknown",
         time: toRelativeTime(row.posted_at),
@@ -2142,8 +2145,9 @@ function parseBagsPoolMeta(pool: unknown): {
   website: string | null;
   buyerRank: number | null;
   returns24h: string | null;
+  lifecycle: 'PRE_LAUNCH' | 'PRE_GRAD' | 'MIGRATING' | 'MIGRATED' | undefined;
 } {
-  const empty = { twitter: null, telegram: null, website: null, buyerRank: null, returns24h: null };
+  const empty = { twitter: null, telegram: null, website: null, buyerRank: null, returns24h: null, lifecycle: undefined };
   if (!pool || typeof pool !== "object") return empty;
 
   const p = pool as Record<string, unknown>;
@@ -2212,7 +2216,11 @@ function parseBagsPoolMeta(pool: unknown): {
     inner.price_change_24h,
   );
 
-  return { twitter, telegram, website, buyerRank, returns24h };
+  const lifecycle = normalizeBagsLifecycle(
+    inner.lifecycle ?? inner.status ?? inner.stage ?? inner.phase ?? inner.state,
+  );
+
+  return { twitter, telegram, website, buyerRank, returns24h, lifecycle };
 }
 
 function normalizeTokenMintCandidate(input: unknown): string {
@@ -2398,7 +2406,7 @@ async function refreshBagsTokenStatsOnce(): Promise<void> {
         inner.uniqueHolders,
         inner.holder_count,
       );
-      const lifecycle = (inner.lifecycle || inner.status || "PRE_LAUNCH") as any;
+      const lifecycle = meta.lifecycle ?? "PRE_LAUNCH";
 
       const patch: Record<string, any> = {
         current_mcap: stats.marketCapUsd,
@@ -2444,7 +2452,7 @@ async function refreshBagsTokenStatsOnce(): Promise<void> {
         volume24h: stats.volume24hUsd ?? 0,
         liquidity: liquidity ?? 0,
         holders: holders ?? 0,
-        lifecycle,
+        lifecycle: meta.lifecycle,
         twitter: meta.twitter ?? row.twitter ?? undefined,
         telegram: meta.telegram ?? row.telegram ?? undefined,
         website: meta.website ?? row.website ?? undefined,

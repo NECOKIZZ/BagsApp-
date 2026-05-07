@@ -2,7 +2,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { supabase } from "./supabaseClient";
 import { bagsListAllPools, bagsFetchFeed, type BagsFeedToken } from "./bagsClient";
-import { calculateScratchScore } from "./scoring";
+import { calculateScratchScore, normalizeBagsLifecycle } from "./scoring";
 
 // How many of the AI's candidate token terms we actually search.
 const MAX_CANDIDATES_TO_SEARCH = 4;
@@ -343,6 +343,108 @@ function pickStr(o: unknown, ...keys: string[]): string | null {
   return null;
 }
 
+/** Inline replica of parseBagsPoolStats — avoids circular import from index.ts. */
+function extractBagsStats(pool: unknown): {
+  marketCapUsd: number | null;
+  priceUsd: number | null;
+  volume24hUsd: number | null;
+  liquidity: number | null;
+  holders: number | null;
+} {
+  const empty = { marketCapUsd: null, priceUsd: null, volume24hUsd: null, liquidity: null, holders: null };
+  if (!pool || typeof pool !== "object") return empty;
+  const p = pool as Record<string, unknown>;
+  const inner =
+    (p.data as Record<string, unknown> | undefined) ??
+    (p.pool as Record<string, unknown> | undefined) ??
+    (p.response as Record<string, unknown> | undefined) ??
+    p;
+
+  const pickN = (...c: unknown[]): number | null => {
+    for (const v of c) {
+      const n = Number(v);
+      if (Number.isFinite(n) && n > 0) return n;
+    }
+    return null;
+  };
+
+  return {
+    marketCapUsd: pickN(
+      inner.marketCapUsd, inner.mcapUsd, inner.mcap, inner.marketCap, inner.market_cap, inner.fdvUsd, inner.fdv,
+    ),
+    priceUsd: pickN(
+      inner.priceUsd, inner.price_usd, inner.priceInUsd, inner.usdPrice, inner.usd_price, inner.price, inner.tokenPriceUsd, inner.lastPriceUsd,
+    ),
+    volume24hUsd: pickN(
+      inner.volume24hUsd, inner.volume_24h_usd, inner.volume24h, inner.volume24hUSD, inner.volumeUsd24h, inner.volume_usd_24h, inner.volumeUsd, inner.volume, inner.totalVolumeUsd, inner.total_volume,
+    ),
+    liquidity: pickN(
+      inner.liquidityUsd, inner.liquidity_usd, inner.liquidity, inner.poolLiquidityUsd, inner.tvlUsd, inner.tvl,
+    ),
+    holders: pickN(
+      inner.holderCount, inner.holders, inner.uniqueHolders, inner.holder_count,
+    ),
+  };
+}
+
+/** Inline replica of parseBagsPoolMeta — robust field extraction for insert-time scoring. */
+function extractBagsMeta(pool: unknown): {
+  twitter: string | null;
+  telegram: string | null;
+  website: string | null;
+  buyerRank: number | null;
+  returns24h: string | null;
+  lifecycle: 'PRE_LAUNCH' | 'PRE_GRAD' | 'MIGRATING' | 'MIGRATED' | undefined;
+} {
+  const empty = { twitter: null, telegram: null, website: null, buyerRank: null, returns24h: null, lifecycle: undefined };
+  if (!pool || typeof pool !== "object") return empty;
+  const p = pool as Record<string, unknown>;
+  const inner =
+    (p.data as Record<string, unknown> | undefined) ??
+    (p.pool as Record<string, unknown> | undefined) ??
+    (p.response as Record<string, unknown> | undefined) ??
+    p;
+
+  const socials =
+    (inner.socials as Record<string, unknown> | undefined) ??
+    (inner.links as Record<string, unknown> | undefined) ??
+    (inner.metadata as Record<string, unknown> | undefined) ??
+    {};
+
+  const pickS = (...c: unknown[]): string | null => {
+    for (const v of c) {
+      if (typeof v === "string" && v.trim()) return v.trim();
+    }
+    return null;
+  };
+
+  const pickN = (...c: unknown[]): number | null => {
+    for (const v of c) {
+      const n = Number(v);
+      if (Number.isFinite(n) && n > 0) return n;
+    }
+    return null;
+  };
+
+  return {
+    twitter: pickS(
+      inner.twitter, inner.twitterUrl, inner.twitter_url, inner.x, inner.xUrl,
+      socials.twitter, socials.x, socials.twitterUrl, socials.twitter_url,
+    ),
+    telegram: pickS(
+      inner.telegram, inner.telegramUrl, inner.telegram_url, inner.tg,
+      socials.telegram, socials.tg, socials.telegramUrl,
+    ),
+    website: pickS(
+      inner.website, inner.websiteUrl, inner.website_url, inner.homepage, inner.url,
+      socials.website, socials.homepage, socials.url,
+    ),
+    buyerRank: pickN(inner.buyerRank, inner.buyer_rank, inner.creatorRank, inner.creator_rank, inner.rank),
+    returns24h: pickS(inner.returns24h, inner.returns_24h, inner.change24h, inner.change_24h, inner.priceChange24h, inner.price_change_24h),
+    lifecycle: normalizeBagsLifecycle(inner.lifecycle ?? inner.status ?? inner.stage ?? inner.phase ?? inner.state),
+  };
+}
+
 type StoredMatch = {
   tweet_id: string;
   token_mint: string;
@@ -473,17 +575,19 @@ async function searchAndScoreTokens(
       try {
         const pool = await bagsGetPoolByMint(h.mint);
         if (pool) {
-          const stats = (pool as any).pool || pool;
+          const stats = extractBagsStats(pool);
+          const meta = extractBagsMeta(pool);
           finalScore = calculateScratchScore({
-            mcap: stats.marketCapUsd || stats.mcap || 0,
-            volume24h: stats.volume24hUsd || stats.volume24h || 0,
-            liquidity: stats.liquidityUsd || stats.liquidity || 0,
-            holders: stats.holders || stats.holderCount || 0,
-            lifecycle: stats.lifecycle || 'PRE_LAUNCH',
-            twitter: stats.twitter,
-            telegram: stats.telegram,
-            website: stats.website,
-            returns: stats.returns24h || stats.change24h
+            mcap: stats.marketCapUsd ?? 0,
+            volume24h: stats.volume24hUsd ?? 0,
+            liquidity: stats.liquidity ?? 0,
+            holders: stats.holders ?? 0,
+            lifecycle: meta.lifecycle,
+            twitter: meta.twitter ?? undefined,
+            telegram: meta.telegram ?? undefined,
+            website: meta.website ?? undefined,
+            buyerRank: meta.buyerRank ?? undefined,
+            returns: meta.returns24h ?? undefined,
           });
         }
       } catch (e) {
@@ -531,17 +635,19 @@ async function searchAndScoreTokens(
       try {
         const pool = await bagsGetPoolByMint(h.mint);
         if (pool) {
-          const stats = (pool as any).pool || pool;
+          const stats = extractBagsStats(pool);
+          const meta = extractBagsMeta(pool);
           finalScore = calculateScratchScore({
-            mcap: stats.marketCapUsd || stats.mcap || 0,
-            volume24h: stats.volume24hUsd || stats.volume24h || 0,
-            liquidity: stats.liquidityUsd || stats.liquidity || 0,
-            holders: stats.holders || stats.holderCount || 0,
-            lifecycle: stats.lifecycle || 'PRE_LAUNCH',
-            twitter: stats.twitter,
-            telegram: stats.telegram,
-            website: stats.website,
-            returns: stats.returns24h || stats.change24h
+            mcap: stats.marketCapUsd ?? 0,
+            volume24h: stats.volume24hUsd ?? 0,
+            liquidity: stats.liquidity ?? 0,
+            holders: stats.holders ?? 0,
+            lifecycle: meta.lifecycle,
+            twitter: meta.twitter ?? undefined,
+            telegram: meta.telegram ?? undefined,
+            website: meta.website ?? undefined,
+            buyerRank: meta.buyerRank ?? undefined,
+            returns: meta.returns24h ?? undefined,
           });
         }
       } catch (e) {
