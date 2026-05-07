@@ -3,7 +3,6 @@ import { LandingPage } from "./pages/LandingPage";
 import { FeedPage } from "./pages/FeedPage";
 import { ProfilePage } from "./pages/ProfilePage";
 import { TokenizePage } from "./pages/TokenizePage";
-import { TokensHeldPage } from "./pages/TokensHeldPage";
 import { TokenDetailPage } from "./pages/TokenDetailPage";
 import { Layout } from "./components/Layout";
 
@@ -16,7 +15,6 @@ export const router = createBrowserRouter([
       { path: "feed", Component: FeedPage },
       { path: "profile", Component: ProfilePage },
       { path: "tokenize", Component: TokenizePage },
-      { path: "tokens-held", Component: TokensHeldPage },
       { path: "token/:mint", Component: TokenDetailPage },
     ],
   },

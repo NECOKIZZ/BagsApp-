@@ -9,6 +9,7 @@ import {
   ExternalLink,
   Sparkles,
 } from "lucide-react";
+import { SwapModal } from "../components/SwapModal";
 import { getTokenMetaByMint, shortMint, SOL_MINT } from "../../lib/jupiter";
 import { fetchTokenMetrics, type TokenMetrics } from "../../lib/api";
 
@@ -325,22 +326,24 @@ export function TokenDetailPage() {
           {/* Actions */}
           <div className="flex flex-col gap-2 md:gap-3">
             <div className="flex gap-2 md:gap-3">
-              <a
-                href={`https://jup.ag/swap/SOL-${resolvedAddress}`}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="btn-font flex-1 px-4 py-2.5 text-sm font-bold uppercase tracking-wider bg-[#00FFA3] text-black rounded-lg hover:bg-[#33ffb5] transition-all shadow-[0_4px_14px_0_rgba(0,255,163,0.3)] active:scale-95 text-center"
-              >
-                Buy on Jupiter
-              </a>
-              <a
-                href={`https://jup.ag/swap/${resolvedAddress}-SOL`}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="btn-font flex-1 px-4 py-2.5 text-sm font-bold uppercase tracking-wider bg-[#1a1f2e] text-white border border-[#242b3d] rounded-lg hover:bg-[#242b3d] transition-all active:scale-95 text-center"
-              >
-                Sell on Jupiter
-              </a>
+              <SwapModal
+                inputMint="So11111111111111111111111111111111111111112"
+                outputMint={resolvedAddress}
+                trigger={
+                  <span className="btn-font flex-1 px-4 py-2.5 text-sm font-bold uppercase tracking-wider bg-[#00FFA3] text-black rounded-lg hover:bg-[#33ffb5] transition-all shadow-[0_4px_14px_0_rgba(0,255,163,0.3)] active:scale-95 text-center cursor-pointer inline-block">
+                    Buy on Jupiter
+                  </span>
+                }
+              />
+              <SwapModal
+                inputMint={resolvedAddress}
+                outputMint="So11111111111111111111111111111111111111112"
+                trigger={
+                  <span className="btn-font flex-1 px-4 py-2.5 text-sm font-bold uppercase tracking-wider bg-[#1a1f2e] text-white border border-[#242b3d] rounded-lg hover:bg-[#242b3d] transition-all active:scale-95 text-center cursor-pointer inline-block">
+                    Sell on Jupiter
+                  </span>
+                }
+              />
             </div>
             {metrics?.isOnBags ? (
               <a

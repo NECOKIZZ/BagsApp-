@@ -1,8 +1,7 @@
-
-
 import { useState, useMemo, useEffect, useRef } from "react";
 import { useNavigate } from "react-router";
-import { TrendingUp } from "lucide-react";
+import { TrendingUp, ArrowUpRight, ArrowDownRight, Minus } from "lucide-react";
+import { SwapModal } from "./SwapModal";
 import type { TweetCardProps } from "./TweetCard";
 import { fetchTerminalData, type TerminalToken, type TerminalResponse } from "../../lib/api";
 
@@ -189,14 +188,15 @@ export function MarketTerminal({ tweets, narrative, tweetId }: MarketTerminalPro
               </div>
 
               <div className="w-14 text-right">
-                <a
-                  href={`https://jup.ag/swap/SOL-${token.mint}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="btn-font inline-flex items-center justify-center px-3 py-1 rounded bg-[#00FFA3]/10 border border-[#00FFA3]/20 text-[#00FFA3] text-[10px] font-bold hover:bg-[#00FFA3] hover:text-black transition-all"
-                >
-                  BUY
-                </a>
+                <SwapModal
+                  inputMint="So11111111111111111111111111111111111111112"
+                  outputMint={token.mint ?? undefined}
+                  trigger={
+                    <span className="btn-font inline-flex items-center justify-center px-3 py-1 rounded bg-[#00FFA3]/10 border border-[#00FFA3]/20 text-[#00FFA3] text-[10px] font-bold hover:bg-[#00FFA3] hover:text-black transition-all cursor-pointer">
+                      BUY
+                    </span>
+                  }
+                />
               </div>
             </div>
           ))
