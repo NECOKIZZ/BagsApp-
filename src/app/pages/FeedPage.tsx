@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { TweetCard } from "../components/TweetCard";
 import { NavButtons } from "../components/NavButtons";
 import type { TweetCardProps } from "../components/TweetCard";
@@ -24,8 +24,13 @@ export function FeedPage() {
   const [walletAddress, setWalletAddress] = useState<string | null>(null);
   const [authToken, setAuthToken] = useState<string | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
-  const [selectedNarrative, setSelectedNarrative] = useState<string | null>(null);
-  const [selectedTweetId, setSelectedTweetId] = useState<string | null>(null);
+  const [selectedNarrative, setSelectedNarrative] = useState<string | null>(() => {
+    try { return sessionStorage.getItem("delphi_feed_narrative"); } catch { return null; }
+  });
+  const [selectedTweetId, setSelectedTweetId] = useState<string | null>(() => {
+    try { return sessionStorage.getItem("delphi_feed_tweet"); } catch { return null; }
+  });
+  const feedScrollRef = useRef<HTMLDivElement>(null);
 
   const loadFeed = useCallback(async (nextFilter: FeedFilter, opts?: { silent?: boolean }) => {
     if (!opts?.silent) {
@@ -70,6 +75,53 @@ export function FeedPage() {
   useEffect(() => {
     void loadFeed(filter);
   }, [filter, loadFeed]);
+
+  // Persist selected tweet/narrative across navigations
+  useEffect(() => {
+    try {
+      if (selectedTweetId) sessionStorage.setItem("delphi_feed_tweet", selectedTweetId);
+      else sessionStorage.removeItem("delphi_feed_tweet");
+      if (selectedNarrative) sessionStorage.setItem("delphi_feed_narrative", selectedNarrative);
+      else sessionStorage.removeItem("delphi_feed_narrative");
+    } catch {}
+  }, [selectedTweetId, selectedNarrative]);
+
+  // Restore scroll position after initial load; save on scroll/unmount
+  useEffect(() => {
+    if (!loading && feedScrollRef.current) {
+      const saved = sessionStorage.getItem("delphi_feed_scroll");
+      if (saved) {
+        const pos = parseInt(saved, 10);
+        if (!isNaN(pos) && pos > 0) {
+          feedScrollRef.current.scrollTop = pos;
+        }
+      }
+    }
+  }, [loading]);
+
+  useEffect(() => {
+    const el = feedScrollRef.current;
+    if (!el) return;
+    const onScroll = () => {
+      try { sessionStorage.setItem("delphi_feed_scroll", String(el.scrollTop)); } catch {}
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    const onBeforeUnload = () => {
+      try { sessionStorage.setItem("delphi_feed_scroll", String(el.scrollTop)); } catch {}
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => {
+      el.removeEventListener("scroll", onScroll);
+      window.removeEventListener("beforeunload", onBeforeUnload);
+      onBeforeUnload();
+    };
+  }, []);
+
+  // Changing filter resets saved scroll so user starts from top
+  useEffect(() => {
+    try { sessionStorage.removeItem("delphi_feed_scroll"); } catch {}
+    if (feedScrollRef.current) feedScrollRef.current.scrollTop = 0;
+  }, [filter]);
 
   // Silent auto-refresh every 30s. Pauses when tab not visible to save API quota.
   useEffect(() => {
@@ -307,7 +359,7 @@ export function FeedPage() {
         </aside>
 
         {/* RIGHT: Signal Feed (the only scrollable area) */}
-        <div className="flex-1 min-w-0 overflow-y-auto no-scrollbar">
+        <div ref={feedScrollRef} className="flex-1 min-w-0 overflow-y-auto no-scrollbar">
           <div className="flex flex-col gap-4">
             {/* Futuristic Header Card */}
             <div className="rounded-xl border border-[#1a1f2e] bg-[#0B0F17]/80 backdrop-blur-sm p-5 relative overflow-hidden">

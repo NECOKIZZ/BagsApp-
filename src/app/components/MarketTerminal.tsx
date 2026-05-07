@@ -1,6 +1,6 @@
 
 
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, useRef } from "react";
 import { useNavigate } from "react-router";
 import { TrendingUp } from "lucide-react";
 import type { TweetCardProps } from "./TweetCard";
@@ -19,21 +19,23 @@ export function MarketTerminal({ tweets, narrative, tweetId }: MarketTerminalPro
   const [activeTab, setActiveTab] = useState<TerminalTab>("YOUNG");
   const [data, setData] = useState<TerminalResponse | null>(null);
   const [loading, setLoading] = useState(true);
+  const initialLoadDone = useRef(false);
 
   useEffect(() => {
-    const load = async () => {
+    const load = async (isBackground = false) => {
+      if (!isBackground) setLoading(true);
       try {
-        setLoading(true);
         const res = await fetchTerminalData(narrative, tweetId);
         setData(res);
       } catch (e) {
         console.error("Failed to load terminal data", e);
       } finally {
-        setLoading(false);
+        if (!isBackground) setLoading(false);
+        initialLoadDone.current = true;
       }
     };
-    load();
-    const id = setInterval(load, 30_000); // Sync with feed refresh
+    load(false);
+    const id = setInterval(() => load(true), 30_000); // background refresh
     return () => clearInterval(id);
   }, [narrative, tweetId]);
 
