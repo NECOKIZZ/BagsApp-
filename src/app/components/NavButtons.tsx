@@ -9,7 +9,7 @@ import { Link, useLocation } from "react-router";
  */
 export function NavButtons() {
   const location = useLocation();
-  const isFeed = location.pathname === "/";
+  const isFeed = location.pathname === "/" || location.pathname === "/feed";
   const isProfile = location.pathname === "/profile";
 
   const desktopBase =
@@ -31,7 +31,7 @@ export function NavButtons() {
       {/* Desktop: centered absolute nav */}
       <div className="absolute inset-x-0 hidden sm:flex justify-center pointer-events-none">
         <div className="flex items-center gap-2 pointer-events-auto">
-          <Link to="/" className={`${desktopBase} ${isFeed ? desktopActive : desktopIdle}`}>
+          <Link to="/feed" className={`${desktopBase} ${isFeed ? desktopActive : desktopIdle}`}>
             FEED
           </Link>
           <Link
@@ -45,7 +45,7 @@ export function NavButtons() {
 
       {/* Mobile: inline compact nav */}
       <div className="flex sm:hidden items-center gap-1.5">
-        <Link to="/" className={`${mobileBase} ${isFeed ? mobileActive : mobileIdle}`}>
+        <Link to="/feed" className={`${mobileBase} ${isFeed ? mobileActive : mobileIdle}`}>
           FEED
         </Link>
         <Link

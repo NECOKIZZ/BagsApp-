@@ -128,7 +128,7 @@ export function TokensHeldPage() {
             <div className="flex items-center justify-center h-12 w-12 md:h-[54px] md:w-[54px]">
               <img src="/Delphi.svg" alt="Delphi Logo" className="h-full w-full object-contain" />
             </div>
-            <span className="text-xl tracking-widest text-white mt-1" style={{ fontFamily: '"Press Start 2P", system-ui' }}>DELPHI</span>
+            <span className="text-xl tracking-widest mt-1" style={{ fontFamily: '"Press Start 2P", system-ui' }}><span className="text-white">DEL</span><span className="text-[#00FFA3]">PHI</span></span>
           </div>
 
           <div className="ml-auto">

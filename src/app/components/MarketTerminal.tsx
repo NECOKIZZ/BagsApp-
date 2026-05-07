@@ -82,7 +82,7 @@ export function MarketTerminal({ tweets, narrative, tweetId }: MarketTerminalPro
 
       {/* Header */}
       <div className="shrink-0 bg-[#05070B]/90 backdrop-blur-md border-b border-[#1a1f2e] p-4 flex flex-col items-center">
-        <h2 className="text-white text-xl md:text-2xl tracking-widest uppercase truncate" style={{ fontFamily: '"Press Start 2P", system-ui' }}>
+        <h2 className="text-white text-sm md:text-base tracking-widest uppercase truncate" style={{ fontFamily: '"Press Start 2P", system-ui' }}>
           TERMINAL
         </h2>
       </div>
@@ -108,7 +108,7 @@ export function MarketTerminal({ tweets, narrative, tweetId }: MarketTerminalPro
       <div className="shrink-0 flex items-center px-3 py-2 border-b border-[#1a1f2e]/60 bg-[#05070B]/50 text-[#5a6078] font-mono text-[10px] uppercase tracking-wider">
         <div className="flex-1 min-w-0">Token</div>
         <div className="w-12 text-right">Score</div>
-        <div className="w-14 text-right">Time</div>
+        <div className="w-14 text-right hidden md:block">Time</div>
         <div className="w-14 text-right hidden md:block">24h%</div>
         <div className="w-14 text-right">Action</div>
       </div>
@@ -137,19 +137,19 @@ export function MarketTerminal({ tweets, narrative, tweetId }: MarketTerminalPro
           activeTokens.map((token: TerminalToken) => (
             <div
               key={token.mint}
-              className="group flex items-center w-full px-3 py-2.5 border-b border-[#1a1f2e]/40 last:border-0 hover:bg-[#00FFA3]/5 transition-all text-left"
+              className="group flex items-center w-full px-3 py-2 md:py-2.5 border-b border-[#1a1f2e]/40 last:border-0 hover:bg-[#00FFA3]/5 transition-all text-left"
             >
               <div className="flex items-center gap-2 flex-1 min-w-0">
                 {token.logoUrl ? (
-                  <img src={token.logoUrl} className="w-5 h-5 rounded-full object-cover shrink-0" alt={token.name} />
+                  <img src={token.logoUrl} className="w-5 h-5 rounded-full object-cover shrink-0 hidden md:block" alt={token.name} />
                 ) : (
-                  <div className="w-5 h-5 rounded-full bg-[#1a1f2e] flex items-center justify-center text-[10px] text-[#5a6078] font-mono shrink-0">
+                  <div className="w-5 h-5 rounded-full bg-[#1a1f2e] flex items-center justify-center text-[10px] text-[#5a6078] font-mono shrink-0 hidden md:block">
                     {(token.name || "??").slice(0, 2).toUpperCase()}
                   </div>
                 )}
-                <button 
+                <button
                   onClick={() => navigate(`/token/${token.mint}`)}
-                  className="font-mono font-bold text-sm truncate text-white hover:text-[#00FFA3] transition-colors min-w-0"
+                  className="font-mono font-bold text-xs md:text-sm truncate text-white hover:text-[#00FFA3] transition-colors min-w-0"
                 >
                   {token.name || "???"}
                 </button>
@@ -161,7 +161,7 @@ export function MarketTerminal({ tweets, narrative, tweetId }: MarketTerminalPro
                       src={p.src}
                       alt={p.label}
                       title={p.label}
-                      className="w-3.5 h-3.5 shrink-0 opacity-90"
+                      className="w-3.5 h-3.5 shrink-0 opacity-90 hidden md:block"
                     />
                   );
                 })()}
@@ -180,7 +180,7 @@ export function MarketTerminal({ tweets, narrative, tweetId }: MarketTerminalPro
                 </span>
               </div>
 
-              <div className="font-mono text-[#8b92a8] text-[10px] w-14 text-right">
+              <div className="font-mono text-[#8b92a8] text-[10px] w-14 text-right hidden md:block">
                 {token.time}
               </div>
 

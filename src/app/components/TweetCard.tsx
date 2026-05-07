@@ -398,34 +398,30 @@ export function TweetCard({
                   key={token.name}
                   className="flex items-center justify-between rounded-lg border border-[#1a1f2e] bg-[#05070B]/60 px-3 py-2"
                 >
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 min-w-0">
                     <span
-                      className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-semibold border ${getTokenPillColor(token.name)}`}
+                      className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-semibold border shrink-0 ${getTokenPillColor(token.name)}`}
                     >
                       <span className="w-1.5 h-1.5 rounded-full bg-current opacity-70" />
                       {token.name}
-                      {token.is_on_bags ? (
-                        <span className="ml-0.5 inline-flex items-center rounded-[3px] bg-[#00FFA3]/15 px-1 text-[9px] font-bold text-[#00FFA3] uppercase tracking-wider">
-                          B
-                        </span>
-                      ) : null}
                     </span>
                   </div>
                   <div className="flex items-center gap-3 text-xs">
                     <div className="text-right">
-                      <div className="text-[10px] text-[#5a6078]">MCap</div>
-                      <div className="font-bold text-white">{token.marketCap}</div>
-                    </div>
-                    {token.price ? (
-                      <div className="text-right">
-                        <div className="text-[10px] text-[#5a6078]">Price</div>
-                        <div className="font-bold text-white">{token.price}</div>
-                      </div>
-                    ) : null}
-                    <div className="text-right">
                       <div className="text-[10px] text-[#5a6078]">Score</div>
                       <div className="font-bold text-[#00FFA3]">{token.score}</div>
                     </div>
+                    {token.mint ? (
+                      <a
+                        href={`https://jup.ag/swap/SOL-${token.mint}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        onClick={(e) => e.stopPropagation()}
+                        className="inline-flex items-center justify-center px-3 py-1 rounded bg-[#00FFA3]/10 border border-[#00FFA3]/20 text-[#00FFA3] text-[10px] font-bold hover:bg-[#00FFA3] hover:text-black transition-all"
+                      >
+                        BUY
+                      </a>
+                    ) : null}
                   </div>
                 </div>
               ))
