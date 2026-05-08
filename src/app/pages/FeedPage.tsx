@@ -246,12 +246,16 @@ export function FeedPage() {
   };
 
   const stats = useMemo(() => {
-    const uniqueNarratives = new Set(tweets.map((t) => t.narrative));
+    const uniqueAccounts = new Set(tweets.map((t) => t.handle));
     const tokensCount = tweets.reduce((acc, t) => acc + (t.tokens?.length ?? 0), 0);
+    const launchedCount = tweets.reduce(
+      (acc, t) => acc + (t.tokens?.filter((tok) => tok.launched_here).length ?? 0),
+      0
+    );
     return {
-      tracked: tweets.length,
-      moving: tokensCount,
-      venues: uniqueNarratives.size,
+      accounts: uniqueAccounts.size,
+      monitored: tokensCount,
+      launched: launchedCount,
     };
   }, [tweets]);
 
@@ -265,7 +269,7 @@ export function FeedPage() {
           <div className="flex items-center justify-center h-12 w-12 md:h-[54px] md:w-[54px]">
             <img src="/Delphi.svg" alt="Delphi Logo" className="h-full w-full object-contain" />
           </div>
-          <span className="text-xl tracking-widest mt-1" style={{ fontFamily: '"Press Start 2P", system-ui' }}><span className="text-white">DEL</span><span className="text-[#00FFA3]">PHI</span></span>
+          <span className="hidden md:block text-xl tracking-widest mt-1" style={{ fontFamily: '"Press Start 2P", system-ui' }}><span className="text-white">DEL</span><span className="text-[#00FFA3]">PHI</span></span>
         </div>
 
         {/* Refresh */}
@@ -290,7 +294,7 @@ export function FeedPage() {
               onClick={() => void handleConnectWallet()}
               className="rounded-lg bg-[#00FFA3] px-3 py-1.5 text-xs font-bold text-black shadow-[0_0_15px_rgba(0,255,163,0.25)] transition-all hover:scale-105 hover:bg-[#33ffb5] hover:shadow-[0_0_20px_rgba(0,255,163,0.4)] md:px-4 md:py-2 md:text-sm"
             >
-              Connect wallet
+              Connect<span className="hidden md:inline"> wallet</span>
             </button>
           ) : (
             <>
@@ -406,19 +410,19 @@ export function FeedPage() {
                 {/* Stats Boxes */}
                 <div className="flex gap-3 shrink-0">
                   <div className="rounded-lg border border-[#1a1f2e] bg-[#05070B]/60 p-3 min-w-[80px]">
-                    <div className="text-[10px] font-bold uppercase tracking-wider text-[#5a6078] mb-1">Tracked</div>
-                    <div className="text-xl font-bold text-white">{stats.tracked}</div>
-                    <div className="text-[10px] text-[#5a6078] mt-0.5">signals in view</div>
+                    <div className="text-[10px] font-bold uppercase tracking-wider text-[#5a6078] mb-1">Accounts</div>
+                    <div className="text-xl font-bold text-white">{stats.accounts}</div>
+                    <div className="text-[10px] text-[#5a6078] mt-0.5">being tracked</div>
                   </div>
                   <div className="rounded-lg border border-[#1a1f2e] bg-[#05070B]/60 p-3 min-w-[80px]">
-                    <div className="text-[10px] font-bold uppercase tracking-wider text-[#5a6078] mb-1">Moving</div>
-                    <div className="text-xl font-bold text-[#00FFA3]">{stats.moving}</div>
-                    <div className="text-[10px] text-[#5a6078] mt-0.5">tokens active</div>
+                    <div className="text-[10px] font-bold uppercase tracking-wider text-[#5a6078] mb-1">Monitored</div>
+                    <div className="text-xl font-bold text-[#00FFA3]">{stats.monitored}</div>
+                    <div className="text-[10px] text-[#5a6078] mt-0.5">tokens</div>
                   </div>
                   <div className="rounded-lg border border-[#1a1f2e] bg-[#05070B]/60 p-3 min-w-[80px]">
-                    <div className="text-[10px] font-bold uppercase tracking-wider text-[#5a6078] mb-1">Narratives</div>
-                    <div className="text-xl font-bold text-white">{stats.venues}</div>
-                    <div className="text-[10px] text-[#5a6078] mt-0.5">categories</div>
+                    <div className="text-[10px] font-bold uppercase tracking-wider text-[#5a6078] mb-1">Launched</div>
+                    <div className="text-xl font-bold text-white">{stats.launched}</div>
+                    <div className="text-[10px] text-[#5a6078] mt-0.5">in app</div>
                   </div>
                 </div>
               </div>

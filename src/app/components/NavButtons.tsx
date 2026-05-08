@@ -1,4 +1,5 @@
 import { Link, useLocation } from "react-router";
+import { Home, Wallet } from "lucide-react";
 
 /**
  * Centered FEED / PORTFOLIO nav buttons.
@@ -43,17 +44,24 @@ export function NavButtons() {
         </div>
       </div>
 
-      {/* Mobile: inline compact nav */}
-      <div className="flex sm:hidden items-center gap-1.5">
-        <Link to="/feed" className={`${mobileBase} ${isFeed ? mobileActive : mobileIdle}`}>
-          FEED
-        </Link>
-        <Link
-          to="/profile"
-          className={`${mobileBase} ${isProfile ? mobileActive : mobileIdle}`}
-        >
-          PORTFOLIO
-        </Link>
+      {/* Mobile: icon-only nav, centered absolutely */}
+      <div className="absolute inset-x-0 flex sm:hidden justify-center pointer-events-none">
+        <div className="flex items-center gap-1.5 pointer-events-auto">
+          <Link
+            to="/feed"
+            className={`flex items-center justify-center w-9 h-9 rounded-lg transition-all ${isFeed ? mobileActive : mobileIdle}`}
+            title="Feed"
+          >
+            <Home className="w-4 h-4" />
+          </Link>
+          <Link
+            to="/profile"
+            className={`flex items-center justify-center w-9 h-9 rounded-lg transition-all ${isProfile ? mobileActive : mobileIdle}`}
+            title="Portfolio"
+          >
+            <Wallet className="w-4 h-4" />
+          </Link>
+        </div>
       </div>
     </>
   );

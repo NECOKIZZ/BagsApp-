@@ -34,6 +34,7 @@ export interface Token {
   mint?: string | null;
   age?: string;
   is_on_bags?: boolean;
+  launched_here?: boolean;
 }
 
 export interface TweetCardProps {

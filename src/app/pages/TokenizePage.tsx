@@ -253,7 +253,7 @@ export function TokenizePage() {
             <div className="flex items-center justify-center h-12 w-12 md:h-[54px] md:w-[54px]">
               <img src="/Delphi.svg" alt="Delphi Logo" className="h-full w-full object-contain" />
             </div>
-            <span className="text-xl tracking-widest mt-1" style={{ fontFamily: '"Press Start 2P", system-ui' }}><span className="text-white">DEL</span><span className="text-[#00FFA3]">PHI</span></span>
+            <span className="hidden md:block text-xl tracking-widest mt-1" style={{ fontFamily: '"Press Start 2P", system-ui' }}><span className="text-white">DEL</span><span className="text-[#00FFA3]">PHI</span></span>
           </div>
           
           <NavButtons />
@@ -265,7 +265,7 @@ export function TokenizePage() {
                 onClick={() => void handleConnectWallet()}
                 className="btn-font rounded-lg bg-[#00FFA3] px-3 py-1.5 text-xs font-bold text-black shadow-[0_0_15px_rgba(0,255,163,0.25)] transition-all hover:scale-105 hover:bg-[#33ffb5] hover:shadow-[0_0_20px_rgba(0,255,163,0.4)] md:px-4 md:py-2 md:text-sm"
               >
-                Connect wallet
+                Connect<span className="hidden md:inline"> wallet</span>
               </button>
             ) : (
               <>

@@ -673,6 +673,7 @@ app.get("/api/feed", async (req, res) => {
           mint: t.token_mint ?? null,
           age: toRelativeTime(t.launched_at),
           is_on_bags: Boolean(t.is_on_bags),
+          launched_here: Boolean(t.launched_here),
         })),
       };
     });
