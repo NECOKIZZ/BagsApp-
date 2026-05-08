@@ -302,7 +302,7 @@ export function TweetCard({
                 className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-semibold border ${getTokenPillColor(token.name)}`}
               >
                 <span className="w-1.5 h-1.5 rounded-full bg-current opacity-70" />
-                {token.ticker || token.name}
+                {token.name}
                 {token.is_on_bags ? (
                   <span className="ml-0.5 inline-flex items-center rounded-[3px] bg-[#00FFA3]/15 px-1 text-[9px] font-bold text-[#00FFA3] uppercase tracking-wider">
                     B
@@ -401,12 +401,20 @@ export function TweetCard({
                   className="flex items-center justify-between rounded-lg border border-[#1a1f2e] bg-[#05070B]/60 px-3 py-2"
                 >
                   <div className="flex items-center gap-2 min-w-0">
-                    <span
-                      className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-semibold border shrink-0 ${getTokenPillColor(token.name)}`}
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (token.mint) navigate(`/token/${token.mint}`);
+                      }}
+                      className="text-xs font-bold text-white hover:text-[#00FFA3] transition-colors truncate"
                     >
-                      <span className="w-1.5 h-1.5 rounded-full bg-current opacity-70" />
                       {token.ticker || token.name}
-                    </span>
+                    </button>
+                    {token.is_on_bags ? (
+                      <span className="inline-flex items-center rounded-[3px] bg-[#00FFA3]/15 px-1 text-[9px] font-bold text-[#00FFA3] uppercase tracking-wider shrink-0">
+                        B
+                      </span>
+                    ) : null}
                   </div>
                   <div className="flex items-center gap-3 text-xs">
                     <div className="text-right">
