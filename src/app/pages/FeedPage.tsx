@@ -4,7 +4,7 @@ import { NavButtons } from "../components/NavButtons";
 import type { TweetCardProps } from "../components/TweetCard";
 import { TweetCardSkeleton } from "../components/TweetCardSkeleton";
 import { MarketTerminal } from "../components/MarketTerminal";
-import { Inbox, RefreshCw, TrendingUp, User } from "lucide-react";
+import { Inbox, RefreshCw, User } from "lucide-react";
 import {
   checkWalletSession,
   fetchFeed,
@@ -24,7 +24,6 @@ export function FeedPage() {
   const [walletAddress, setWalletAddress] = useState<string | null>(null);
   const [authToken, setAuthToken] = useState<string | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
-  const [mobileTerminalOpen, setMobileTerminalOpen] = useState(false);
   const [selectedNarrative, setSelectedNarrative] = useState<string | null>(() => {
     try { return sessionStorage.getItem("delphi_feed_narrative"); } catch { return null; }
   });
@@ -362,30 +361,6 @@ export function FeedPage() {
         {/* RIGHT: Signal Feed (the only scrollable area) */}
         <div ref={feedScrollRef} className="flex-1 min-w-0 overflow-y-auto no-scrollbar">
           <div className="flex flex-col gap-4">
-            {/* Mobile Terminal Toggle */}
-            <div className="md:hidden">
-              <button
-                type="button"
-                onClick={() => setMobileTerminalOpen((s) => !s)}
-                className="w-full flex items-center justify-between rounded-xl border border-[#1a1f2e] bg-[#0B0F17]/80 backdrop-blur-sm px-4 py-3 text-xs font-bold text-[#8b92a8] uppercase tracking-wider hover:border-[#242b3d] hover:text-white transition-all"
-              >
-                <span className="flex items-center gap-2">
-                  <TrendingUp className="w-4 h-4 text-[#00FFA3]" />
-                  {mobileTerminalOpen ? "Hide Terminal" : "Show Terminal"}
-                </span>
-                <span className="text-[10px] text-[#5a6078]">{mobileTerminalOpen ? "▲" : "▼"}</span>
-              </button>
-              {mobileTerminalOpen && (
-                <div className="mt-2 h-[400px]">
-                  <MarketTerminal
-                    tweets={visibleTweets}
-                    narrative={selectedNarrative}
-                    tweetId={selectedTweetId}
-                  />
-                </div>
-              )}
-            </div>
-
             {/* Futuristic Header Card */}
             <div className="rounded-xl border border-[#1a1f2e] bg-[#0B0F17]/80 backdrop-blur-sm p-5 relative overflow-hidden">
               {/* Subtle glow */}

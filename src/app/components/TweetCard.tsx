@@ -410,6 +410,10 @@ export function TweetCard({
                   </div>
                   <div className="flex items-center gap-3 text-xs">
                     <div className="text-right">
+                      <div className="text-[10px] text-[#5a6078]">MCap</div>
+                      <div className="font-bold text-white">{token.marketCap}</div>
+                    </div>
+                    <div className="text-right">
                       <div className="text-[10px] text-[#5a6078]">Score</div>
                       <div className="font-bold text-[#00FFA3]">{token.score}</div>
                     </div>
