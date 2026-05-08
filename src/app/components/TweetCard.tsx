@@ -24,6 +24,7 @@ export interface Token {
   rank: number;
   icon: string;
   name: string;
+  ticker?: string;
   match: number;
   marketCap: string;
   volume?: string;
@@ -301,7 +302,7 @@ export function TweetCard({
                 className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-semibold border ${getTokenPillColor(token.name)}`}
               >
                 <span className="w-1.5 h-1.5 rounded-full bg-current opacity-70" />
-                {token.name}
+                {token.ticker || token.name}
                 {token.is_on_bags ? (
                   <span className="ml-0.5 inline-flex items-center rounded-[3px] bg-[#00FFA3]/15 px-1 text-[9px] font-bold text-[#00FFA3] uppercase tracking-wider">
                     B
@@ -404,7 +405,7 @@ export function TweetCard({
                       className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-semibold border shrink-0 ${getTokenPillColor(token.name)}`}
                     >
                       <span className="w-1.5 h-1.5 rounded-full bg-current opacity-70" />
-                      {token.name}
+                      {token.ticker || token.name}
                     </span>
                   </div>
                   <div className="flex items-center gap-3 text-xs">

@@ -663,6 +663,7 @@ app.get("/api/feed", async (req, res) => {
           rank: i + 1,
           icon: String(t.token_ticker ?? "TK").slice(0, 2).toUpperCase(),
           name: t.token_name ?? "UNKNOWN",
+          ticker: t.token_ticker ?? "",
           match: Number(t.match_score ?? 80),
           marketCap: formatUsdCompact(t.current_mcap),
           volume: formatUsdCompact(t.total_volume),
