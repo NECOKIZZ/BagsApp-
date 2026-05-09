@@ -504,6 +504,35 @@ function formatUsdPrice(value: unknown): string {
   return `$${n.toFixed(8).replace(/0+$/, "").replace(/\.$/, "")}`;
 }
 
+// ── Top Tokens (for Delphi Agent) ────────────────────────────
+app.get("/api/top-tokens", async (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit as string) || 5, 20);
+    const { data, error } = await supabase
+      .from("narrative_tokens")
+      .select("token_name, token_ticker, token_mint, score, current_mcap, total_volume, launched_here")
+      .order("score", { ascending: false })
+      .limit(100);
+
+    if (error) throw error;
+
+    // Deduplicate by mint — keep the highest-scored entry
+    const seen = new Map<string, any>();
+    for (const t of data || []) {
+      if (!t.token_mint) continue;
+      if (!seen.has(t.token_mint)) {
+        seen.set(t.token_mint, t);
+      }
+    }
+
+    const tokens = Array.from(seen.values()).slice(0, limit);
+    res.json({ tokens });
+  } catch (err: any) {
+    console.error("Top tokens error:", err);
+    res.status(500).json({ error: err.message || "Failed to fetch top tokens" });
+  }
+});
+
 // ── Feed ─────────────────────────────────────────────────────
 app.get("/api/feed", async (req, res) => {
   try {
