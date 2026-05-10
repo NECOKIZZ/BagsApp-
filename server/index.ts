@@ -20,6 +20,7 @@ import {
   getBagsConfig,
 } from "./bagsClient";
 import { calculateScratchScore, getConcentrationData, normalizeBagsLifecycle } from "./scoring";
+import { fetchDexScreenerData, type DexScreenerEnrichment } from "./dexscreener";
 import { fetchLinkPreview } from "./linkPreview";
 import { runNarrativePipeline, startFeedCacheRefresher } from "./narrativePipeline";
 
@@ -893,7 +894,7 @@ app.get("/api/token/:mint/metrics", async (req, res) => {
           inner.uniqueHolders,
           inner.holder_count,
         );
-        out.score = pickNum(inner.score, inner.scratchScore) ?? out.score;
+        // Don't use Bags' internal score — we compute our own via DexScreener.
       } catch (e) {
         // 400 = mint not on Bags. Flip the flag so we don't keep asking.
         if (e instanceof BagsApiError && e.status === 400) {
@@ -940,10 +941,35 @@ app.get("/api/token/:mint/metrics", async (req, res) => {
       }
     }
 
+    // Live re-score with DexScreener data — ensures token detail page always
+    // shows the v2 score instead of a stale DB value or Bags' internal score.
+    let dexData: DexScreenerEnrichment | null = null;
+    try {
+      dexData = await fetchDexScreenerData(mint);
+      // DexScreener may also fill gaps in mcap/volume/liquidity
+      if (out.marketCapUsd == null && dexData.mcap != null) out.marketCapUsd = dexData.mcap;
+      if (out.volume24hUsd == null && dexData.volume24h != null) out.volume24hUsd = dexData.volume24h;
+      if (out.liquidityUsd == null && dexData.liquidity != null) out.liquidityUsd = dexData.liquidity;
+
+      out.score = calculateScratchScore({
+        mcap: dexData.mcap ?? out.marketCapUsd ?? 0,
+        volume24h: dexData.volume24h ?? out.volume24hUsd ?? 0,
+        liquidity: dexData.liquidity ?? out.liquidityUsd ?? 0,
+        holders: out.holders ?? 0,
+        hasSocials: dexData.hasSocials,
+        priceChange24h: dexData.priceChange24h ?? undefined,
+        pairCreatedAt: dexData.pairCreatedAt,
+        txns24h: dexData.txns24h,
+        jupiterVerified: jupMeta?.verified === true,
+      });
+    } catch (e) {
+      console.warn(`[token-metrics] DexScreener re-score failed for ${mint}:`, e);
+    }
+
     // Persist freshly-fetched metadata back to narrative_tokens so the
     // feed/terminal endpoints (which read straight from DB) stay in sync
     // without relying solely on the 10-min cron jobs. Fire-and-forget.
-    void persistTokenMetricsToDb(mint, out, bagsMeta, jupMeta).catch((e) =>
+    void persistTokenMetricsToDb(mint, out, bagsMeta, jupMeta, dexData).catch((e) =>
       console.warn(`[token-metrics] persist failed for ${mint}:`, e instanceof Error ? e.message : String(e)),
     );
 
@@ -983,6 +1009,7 @@ async function persistTokenMetricsToDb(
   },
   bagsMeta: ReturnType<typeof parseBagsPoolMeta> | null,
   jupMeta: Awaited<ReturnType<typeof fetchJupiterTokenMeta>>,
+  dexData?: DexScreenerEnrichment | null,
 ): Promise<void> {
   const patch: Record<string, unknown> = {
     is_on_bags: out.isOnBags,
@@ -1017,6 +1044,12 @@ async function persistTokenMetricsToDb(
     patch.jupiter_verified = jupMeta.verified;
     if (jupMeta.organicScore != null) patch.jupiter_organic_score = jupMeta.organicScore;
     if (jupMeta.launchedAt) patch.launched_at = jupMeta.launchedAt;
+  }
+
+  // DexScreener enrichment — price change as returns and pair age as launched_at
+  if (dexData) {
+    if (dexData.priceChange24h != null) patch.returns = `${dexData.priceChange24h >= 0 ? "+" : ""}${dexData.priceChange24h.toFixed(2)}%`;
+    if (dexData.pairCreatedAt && !patch.launched_at) patch.launched_at = new Date(dexData.pairCreatedAt).toISOString();
   }
 
   // Try the update with all known columns; if Postgrest rejects unknown columns
@@ -2475,27 +2508,27 @@ async function refreshBagsTokenStatsOnce(): Promise<void> {
         patch.concentration_flag = flag;
       }
 
-      // Score every Bags token, every cycle. Pass merged data: freshly-parsed
-      // pool metadata (overrides) + persisted row fields + Jupiter signals if
-      // this token also has Jupiter data on file (some tokens are on both).
+      // Enrich with DexScreener (volume, socials, price change, age, txns).
+      // Bags pool stats (mcap, liquidity, holders) are used as fallback when
+      // DexScreener doesn't have the pair.
+      const dex = await fetchDexScreenerData(mint);
       const score = calculateScratchScore({
-        mcap: stats.marketCapUsd ?? 0,
-        volume24h: stats.volume24hUsd ?? 0,
-        liquidity: liquidity ?? 0,
+        mcap: dex.mcap ?? stats.marketCapUsd ?? 0,
+        volume24h: dex.volume24h ?? stats.volume24hUsd ?? 0,
+        liquidity: dex.liquidity ?? liquidity ?? 0,
         holders: holders ?? 0,
-        lifecycle: meta.lifecycle,
-        twitter: meta.twitter ?? row.twitter ?? undefined,
-        telegram: meta.telegram ?? row.telegram ?? undefined,
-        website: meta.website ?? row.website ?? undefined,
-        buyerRank: meta.buyerRank ?? row.buyer_rank ?? undefined,
-        returns: meta.returns24h ?? row.returns ?? undefined,
+        hasSocials: dex.hasSocials,
+        priceChange24h: dex.priceChange24h ?? undefined,
+        pairCreatedAt: dex.pairCreatedAt,
+        txns24h: dex.txns24h,
         top1HolderPct: top1 ?? undefined,
         top5HolderPct: top5 ?? undefined,
         jupiterVerified: row.jupiter_verified === true,
-        jupiterOrganicScore:
-          typeof row.jupiter_organic_score === "number" ? row.jupiter_organic_score : undefined,
       });
       patch.score = score;
+      // Persist DexScreener enrichment for UI display
+      if (dex.priceChange24h != null) patch.returns = `${dex.priceChange24h >= 0 ? "+" : ""}${dex.priceChange24h.toFixed(2)}%`;
+      if (dex.pairCreatedAt && !row.launched_at) patch.launched_at = new Date(dex.pairCreatedAt).toISOString();
       console.log(`[bags-refresh] Scored ${mint}: ${score}`);
 
       if (mint !== rawMint) {
@@ -2701,19 +2734,21 @@ async function refreshJupiterTokenMetadataOnce(): Promise<void> {
         }
       }
 
-      // Run the unified Scratch Score with whatever data Jupiter gave us.
-      // For non-Bags tokens, lifecycle/socials/buyer-rank are absent — the
-      // formula handles that and uses verified + organicScore as partial
-      // substitutes (capped so Jupiter-only can't fake a perfect score).
+      // Enrich with DexScreener for scoring (volume, socials, price momentum,
+      // age, txns). Jupiter metadata is still used for logo/name/symbol.
+      const dex = await fetchDexScreenerData(mint);
       const jupScore = calculateScratchScore({
-        mcap: meta.mcap ?? meta.fdv ?? 0,
-        volume24h: meta.volume24hUsd ?? 0,
-        liquidity: meta.liquidityUsd ?? 0,
+        mcap: dex.mcap ?? meta.mcap ?? meta.fdv ?? 0,
+        volume24h: dex.volume24h ?? meta.volume24hUsd ?? 0,
+        liquidity: dex.liquidity ?? meta.liquidityUsd ?? 0,
         holders: meta.holderCount ?? 0,
+        hasSocials: dex.hasSocials,
+        priceChange24h: dex.priceChange24h ?? undefined,
+        pairCreatedAt: dex.pairCreatedAt,
+        txns24h: dex.txns24h,
         top1HolderPct: top1 ?? undefined,
         top5HolderPct: top5 ?? undefined,
         jupiterVerified: meta.verified === true,
-        jupiterOrganicScore: meta.organicScore ?? undefined,
       });
 
       const patch: Record<string, any> = {
@@ -2742,6 +2777,9 @@ async function refreshJupiterTokenMetadataOnce(): Promise<void> {
       patch.jupiter_verified = meta.verified;
       if (meta.organicScore != null) patch.jupiter_organic_score = meta.organicScore;
       if (jupScore > 0) patch.score = jupScore;
+      // Persist DexScreener enrichment for UI display
+      if (dex.priceChange24h != null) patch.returns = `${dex.priceChange24h >= 0 ? "+" : ""}${dex.priceChange24h.toFixed(2)}%`;
+      if (dex.pairCreatedAt && !row.launched_at) patch.launched_at = new Date(dex.pairCreatedAt).toISOString();
 
       const { error: upErr } = await updateNarrativeTokenWithColumnFallback(String(row.id), patch, "jupiter-meta");
       if (upErr) {

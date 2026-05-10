@@ -31,6 +31,10 @@ export function FeedPage() {
     try { return sessionStorage.getItem("delphi_feed_tweet"); } catch { return null; }
   });
   const feedScrollRef = useRef<HTMLDivElement>(null);
+  const [pullDistance, setPullDistance] = useState(0);
+  const [isPulling, setIsPulling] = useState(false);
+  const pullStartY = useRef(0);
+  const pullThreshold = 80;
 
   const loadFeed = useCallback(async (nextFilter: FeedFilter, opts?: { silent?: boolean }) => {
     if (!opts?.silent) {
@@ -86,17 +90,37 @@ export function FeedPage() {
     } catch {}
   }, [selectedTweetId, selectedNarrative]);
 
-  // Restore scroll position after initial load; save on scroll/unmount
+  // Restore scroll position after initial load.
+  // We need multiple rAF ticks because React batches renders and the DOM
+  // content (tweet cards) may not be painted yet when `loading` flips to false.
+  const scrollRestoredRef = useRef(false);
   useEffect(() => {
-    if (!loading && feedScrollRef.current) {
-      const saved = sessionStorage.getItem("delphi_feed_scroll");
-      if (saved) {
-        const pos = parseInt(saved, 10);
-        if (!isNaN(pos) && pos > 0) {
-          feedScrollRef.current.scrollTop = pos;
-        }
+    if (loading || scrollRestoredRef.current) return;
+    const el = feedScrollRef.current;
+    if (!el) return;
+
+    const saved = sessionStorage.getItem("delphi_feed_scroll");
+    if (!saved) { scrollRestoredRef.current = true; return; }
+    const pos = parseInt(saved, 10);
+    if (isNaN(pos) || pos <= 0) { scrollRestoredRef.current = true; return; }
+
+    // Try restoring after the browser paints the content
+    const restore = () => {
+      if (el.scrollHeight > pos) {
+        el.scrollTop = pos;
+        scrollRestoredRef.current = true;
       }
-    }
+    };
+
+    // Attempt across a few frames to handle late-rendering content
+    requestAnimationFrame(() => {
+      restore();
+      requestAnimationFrame(() => {
+        restore();
+        // Final fallback after a short delay (images/lazy content)
+        setTimeout(restore, 100);
+      });
+    });
   }, [loading]);
 
   useEffect(() => {
@@ -121,7 +145,55 @@ export function FeedPage() {
   useEffect(() => {
     try { sessionStorage.removeItem("delphi_feed_scroll"); } catch {}
     if (feedScrollRef.current) feedScrollRef.current.scrollTop = 0;
+    scrollRestoredRef.current = true; // Prevent restore from overriding
   }, [filter]);
+
+  // Pull-to-refresh for mobile
+  useEffect(() => {
+    const el = feedScrollRef.current;
+    if (!el) return;
+    let active = false;
+    let startY = 0;
+
+    const onTouchStart = (e: TouchEvent) => {
+      if (el.scrollTop <= 0) {
+        active = true;
+        startY = e.touches[0].clientY;
+        pullStartY.current = startY;
+      }
+    };
+    const onTouchMove = (e: TouchEvent) => {
+      if (!active) return;
+      const dy = e.touches[0].clientY - startY;
+      if (dy > 0 && el.scrollTop <= 0) {
+        e.preventDefault();
+        setPullDistance(Math.min(dy * 0.5, 120));
+        setIsPulling(true);
+      } else {
+        active = false;
+        setPullDistance(0);
+        setIsPulling(false);
+      }
+    };
+    const onTouchEnd = () => {
+      if (active && pullDistance >= pullThreshold) {
+        setIsRefreshing(true);
+        void loadFeed(filter);
+      }
+      active = false;
+      setPullDistance(0);
+      setIsPulling(false);
+    };
+
+    el.addEventListener("touchstart", onTouchStart, { passive: true });
+    el.addEventListener("touchmove", onTouchMove, { passive: false });
+    el.addEventListener("touchend", onTouchEnd, { passive: true });
+    return () => {
+      el.removeEventListener("touchstart", onTouchStart);
+      el.removeEventListener("touchmove", onTouchMove);
+      el.removeEventListener("touchend", onTouchEnd);
+    };
+  }, [filter, loadFeed, pullDistance, pullThreshold]);
 
   // Silent auto-refresh every 30s. Pauses when tab not visible to save API quota.
   useEffect(() => {
@@ -363,7 +435,24 @@ export function FeedPage() {
         </aside>
 
         {/* RIGHT: Signal Feed (the only scrollable area) */}
-        <div ref={feedScrollRef} className="flex-1 min-w-0 overflow-y-auto no-scrollbar">
+        <div ref={feedScrollRef} className="flex-1 min-w-0 overflow-y-auto no-scrollbar" style={{ overscrollBehavior: "contain" }}>
+          {/* Pull-to-refresh indicator (mobile) */}
+          {isPulling && (
+            <div
+              className="flex items-center justify-center transition-all duration-150 md:hidden"
+              style={{ height: pullDistance, minHeight: 0 }}
+            >
+              <RefreshCw
+                className={`h-5 w-5 text-[#00FFA3] transition-transform duration-200 ${
+                  pullDistance >= pullThreshold ? "scale-110" : "opacity-50"
+                }`}
+                style={{ transform: `rotate(${pullDistance * 3}deg)` }}
+              />
+              <span className="ml-2 text-[10px] font-bold text-[#5a6078]">
+                {pullDistance >= pullThreshold ? "Release to refresh" : "Pull to refresh"}
+              </span>
+            </div>
+          )}
           <div className="flex flex-col gap-4">
             {/* Futuristic Header Card */}
             <div className="rounded-xl border border-[#1a1f2e] bg-[#0B0F17]/80 backdrop-blur-sm p-5 relative overflow-hidden">

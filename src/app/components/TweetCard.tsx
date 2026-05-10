@@ -1,5 +1,5 @@
 import { useMemo, useState, type ReactNode } from "react";
-import { useNavigate } from "react-router";
+import { Link, useNavigate } from "react-router";
 import nlp from "compromise";
 import {
   Heart,
@@ -16,7 +16,6 @@ import {
   PenSquare,
 } from "lucide-react";
 import { TweetLinkPreview, type LinkPreviewData } from "./TweetLinkPreview";
-import { SwapModal } from "./SwapModal";
 
 type TweetKind = "tweet" | "repost" | "quote" | "comment";
 
@@ -428,15 +427,12 @@ export function TweetCard({
                     </div>
                     {token.mint ? (
                       <div onClick={(e) => e.stopPropagation()}>
-                        <SwapModal
-                          inputMint="So11111111111111111111111111111111111111112"
-                          outputMint={token.mint}
-                          trigger={
-                            <span className="inline-flex items-center justify-center px-3 py-1 rounded bg-[#00FFA3]/10 border border-[#00FFA3]/20 text-[#00FFA3] text-[10px] font-bold hover:bg-[#00FFA3] hover:text-black transition-all cursor-pointer">
-                              BUY
-                            </span>
-                          }
-                        />
+                        <Link
+                          to={`/swap?outputMint=${token.mint}`}
+                          className="inline-flex items-center justify-center px-3 py-1 rounded bg-[#00FFA3]/10 border border-[#00FFA3]/20 text-[#00FFA3] text-[10px] font-bold hover:bg-[#00FFA3] hover:text-black transition-all cursor-pointer"
+                        >
+                          BUY
+                        </Link>
                       </div>
                     ) : null}
                   </div>

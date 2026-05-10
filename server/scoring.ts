@@ -1,44 +1,52 @@
 
 export interface TokenData {
-  // Core market signals — available from both Bags and Jupiter
+  // Core market signals — sourced from DexScreener (primary) or Bags pool API (fallback)
   mcap: number;
   volume24h: number;
   liquidity: number;
   holders: number;
 
-  // Bags-specific signals — null/undefined for Jupiter-only tokens.
-  // The formula treats missing values as zero contribution rather than
-  // disqualifying the token, so any source can produce a real score.
-  lifecycle?: 'PRE_LAUNCH' | 'PRE_GRAD' | 'MIGRATING' | 'MIGRATED';
-  twitter?: string;
-  telegram?: string;
-  website?: string;
-  buyerRank?: number;
-  returns?: string;
-  top1HolderPct?: number;   // From concentration check (Bags + Helius RPC)
+  // Social presence — single boolean from DexScreener's info.socials / info.websites
+  hasSocials?: boolean;
+
+  // Price momentum — 24h price change % from DexScreener
+  priceChange24h?: number;
+
+  // Token age — epoch ms of pair creation from DexScreener's pairCreatedAt
+  pairCreatedAt?: number | null;
+
+  // Transaction activity — 24h buy+sell count from DexScreener
+  txns24h?: number | null;
+
+  // Concentration — from Solana RPC getTokenLargestAccounts
+  top1HolderPct?: number;
   top5HolderPct?: number;
 
-  // Jupiter-specific signals — null/undefined for pure-Bags scoring.
-  // Provide a parallel safety/quality signal when on-chain data isn't
-  // accessible (Jupiter exposes verified + organicScore in lieu of socials/lifecycle).
+  // Jupiter verified badge — small bonus for tokens Jupiter has vetted
   jupiterVerified?: boolean;
-  jupiterOrganicScore?: number; // 0-100 from Jupiter's algo
 }
 
 /**
- * Unified Scratch Score (0-100). Works for both Bags and Jupiter-sourced tokens.
+ * Unified Scratch Score v2 (0-100).
  *
- * Design:
- *  - Core market signals (mcap/volume/liquidity/holders) carry the bulk of the
- *    weight (75pts) because they're available everywhere.
- *  - Bags-only signals (lifecycle, socials, buyer rank, concentration) add up
- *    to ~25pts when present. A Bags token with full data can hit 100.
- *  - Jupiter-only signals (verified, organicScore) substitute up to 15pts
- *    when Bags signals are absent — so a high-quality Jupiter token can still
- *    reach 80+, but won't fake the top end of the scale reserved for
- *    on-chain-validated Bags tokens.
- *  - Missing fields contribute 0 instead of returning early, so we never
- *    blank-score a token just because part of the data is unavailable.
+ * Powered primarily by DexScreener data (free, no key, real volume/socials/age).
+ * Falls back gracefully when fields are missing — 0 contribution, not disqualification.
+ *
+ * Weight table:
+ *   1. Vol / MCap ratio      25pts  — trading velocity (threshold: vol = 50% mcap for full)
+ *   2. Holder distribution   15pts  — log-scaled, halved if top1 >= 30%
+ *   3. Social presence       10pts  — boolean: has ANY social link (DexScreener)
+ *   4. Vol / Liquidity ratio 10pts  — pool turnover
+ *   5. MCap tier fit         10pts  — rewards $50K–$500K sweet spot
+ *   6. Liquidity depth       10pts  — log-scaled, $50K = full marks
+ *   7. Token age / maturity   8pts  — from DexScreener pairCreatedAt
+ *   8. Price momentum 24h     7pts  — from DexScreener priceChange.h24
+ *   9. Jupiter verified        3pts  — bonus for Jupiter-vetted tokens
+ *  10. Transaction activity    2pts  — 24h buy+sell count from DexScreener
+ *                           ─────
+ *  Positive max:            100pts
+ *  P1. Rug combo penalty     -5pts  — no socials + <20 holders + <$2K liq
+ *  P2. Concentration penalty -10pts — top1 holder dominance
  */
 export function calculateScratchScore(token: TokenData): number {
   // Genuine "no data" guard — only when we have literally nothing to score.
@@ -48,13 +56,14 @@ export function calculateScratchScore(token: TokenData): number {
 
   let score = 0;
 
-  // 4.1 Vol / MCap ratio (30pts) — trading velocity vs token size
+  // 1. Vol / MCap ratio (25pts) — trading velocity vs token size
+  //    Full marks when volume24h >= 50% of mcap (lowered from 200% — realistic threshold).
   if (token.mcap > 0) {
     const volMcapRatio = (token.volume24h ?? 0) / token.mcap;
-    score += Math.min(volMcapRatio / 2.0, 1.0) * 30;
+    score += Math.min(volMcapRatio / 0.5, 1.0) * 25;
   }
 
-  // 4.2 Holder distribution quality (15pts)
+  // 2. Holder distribution quality (15pts)
   if (token.holders > 0 && token.mcap > 0) {
     const tierCap =
       token.mcap < 10_000    ? 50    :
@@ -73,13 +82,19 @@ export function calculateScratchScore(token: TokenData): number {
     score += holderScore;
   }
 
-  // 4.3 Vol / Liquidity ratio (10pts) — pool health/velocity
+  // 3. Social presence (10pts) — boolean: does the token have ANY social link?
+  //    Sourced from DexScreener info.socials / info.websites.
+  if (token.hasSocials) {
+    score += 10;
+  }
+
+  // 4. Vol / Liquidity ratio (10pts) — pool health/velocity
   if (token.liquidity > 0 && token.volume24h !== undefined) {
     const volLiqRatio = token.volume24h / Math.max(token.liquidity, 1);
     score += Math.min(volLiqRatio / 5.0, 1.0) * 10;
   }
 
-  // 4.4 MCap tier fit (10pts) — rewards early-mid stage with upside
+  // 5. MCap tier fit (10pts) — rewards early-mid stage with upside
   if (token.mcap > 0) {
     score +=
       token.mcap < 1_000      ? 4  :
@@ -89,17 +104,7 @@ export function calculateScratchScore(token: TokenData): number {
       token.mcap < 2_000_000  ? 7  : 3;
   }
 
-  // 4.5 Lifecycle (10pts) — Bags-only on-chain milestones.
-  // Missing lifecycle no longer disqualifies; just contributes 0.
-  if (token.lifecycle) {
-    score +=
-      token.lifecycle === 'MIGRATED'   ? 10 :
-      token.lifecycle === 'MIGRATING'  ? 8  :
-      token.lifecycle === 'PRE_GRAD'   ? 7  :
-      token.lifecycle === 'PRE_LAUNCH' ? 0  : 0;
-  }
-
-  // 4.6 Liquidity depth (10pts) — absolute pool size, log-scaled
+  // 6. Liquidity depth (10pts) — absolute pool size, log-scaled
   if (token.liquidity > 0) {
     score += Math.min(
       Math.log10(Math.max(token.liquidity, 1)) / Math.log10(50_000),
@@ -107,44 +112,42 @@ export function calculateScratchScore(token: TokenData): number {
     ) * 10;
   }
 
-  // 4.7 Socials (5pts) — Bags-only. Jupiter doesn't return these.
-  if (token.twitter)  score += 2;
-  if (token.telegram) score += 2;
-  if (token.website)  score += 1;
-
-  // 4.8 Buyer rank (3pts) — Bags-only
-  if (token.buyerRank) {
+  // 7. Token age / maturity (8pts) — from DexScreener pairCreatedAt
+  if (token.pairCreatedAt && token.pairCreatedAt > 0) {
+    const ageMs = Date.now() - token.pairCreatedAt;
+    const ageHours = ageMs / (1000 * 60 * 60);
     score +=
-      token.buyerRank <= 10  ? 3 :
-      token.buyerRank <= 50  ? 2 :
-      token.buyerRank <= 200 ? 1 : 0;
+      ageHours < 1    ? 0 :
+      ageHours < 6    ? 3 :
+      ageHours < 24   ? 5 :
+      ageHours < 168  ? 8 : 6;  // 168h = 7 days
   }
 
-  // 4.9 Returns (2pts)
-  if (token.returns) {
-    const ret = parseFloat(token.returns.replace('%', '').replace('+', ''));
-    if (Number.isFinite(ret)) {
-      score += ret >= 50 ? 2 : ret >= 10 ? 1 : ret > 0 ? 0.5 : 0;
-    }
+  // 8. Price momentum 24h (7pts) — from DexScreener priceChange.h24
+  if (token.priceChange24h !== undefined && token.priceChange24h !== null) {
+    score +=
+      token.priceChange24h >= 100 ? 7 :
+      token.priceChange24h >= 50  ? 5 :
+      token.priceChange24h >= 20  ? 3 :
+      token.priceChange24h > 0    ? 1 : 0;
   }
 
-  // 4.10 Jupiter quality bonus (up to 15pts) — partially substitutes for the
-  // lifecycle/socials/buyer-rank signals that Jupiter doesn't expose. Capped
-  // so it can't push a Jupiter-only token to a perfect score.
-  if (token.jupiterVerified) score += 5;
-  if (token.jupiterOrganicScore !== undefined) {
-    score += Math.min(10, token.jupiterOrganicScore / 10);
+  // 9. Jupiter verified (3pts) — small bonus for tokens Jupiter has vetted
+  if (token.jupiterVerified) score += 3;
+
+  // 10. Transaction activity (2pts) — 24h buy+sell count from DexScreener
+  if (token.txns24h != null && token.txns24h > 0) {
+    score += token.txns24h >= 100 ? 2 : token.txns24h >= 10 ? 1 : 0;
   }
 
   // --- Penalties ---
 
-  // 5.1 Rug combo (-5pts) — only fire when we have data to judge
-  const noSocials   = !token.twitter && !token.telegram && !token.website;
+  // P1. Rug combo (-5pts) — no socials + few holders + tiny pool
   const thinHolders = token.holders > 0 && token.holders < 20;
   const thinPool    = token.liquidity > 0 && token.liquidity < 2_000;
-  if (noSocials && thinHolders && thinPool) score -= 5;
+  if (!token.hasSocials && thinHolders && thinPool) score -= 5;
 
-  // 5.2 Concentration (-10pts)
+  // P2. Concentration (-10pts)
   if (token.top1HolderPct !== undefined) {
     if (token.top1HolderPct >= 66)      score -= 10;
     else if (token.top1HolderPct >= 50) score -= 7;

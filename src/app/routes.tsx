@@ -4,6 +4,7 @@ import { FeedPage } from "./pages/FeedPage";
 import { ProfilePage } from "./pages/ProfilePage";
 import { TokenizePage } from "./pages/TokenizePage";
 import { TokenDetailPage } from "./pages/TokenDetailPage";
+import { SwapPage } from "./pages/SwapPage";
 import { Layout } from "./components/Layout";
 
 export const router = createBrowserRouter([
@@ -16,6 +17,7 @@ export const router = createBrowserRouter([
       { path: "profile", Component: ProfilePage },
       { path: "tokenize", Component: TokenizePage },
       { path: "token/:mint", Component: TokenDetailPage },
+      { path: "swap", Component: SwapPage },
     ],
   },
 ]);
