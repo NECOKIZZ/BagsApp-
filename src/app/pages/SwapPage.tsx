@@ -14,8 +14,8 @@ import { getPhantom } from "../../lib/phantom";
 import { Connection, VersionedTransaction } from "@solana/web3.js";
 
 const RPC_URL = "https://api.mainnet-beta.solana.com";
-const JUPITER_QUOTE = "https://api.jup.ag/quote/v1";
-const JUPITER_SWAP = "https://api.jup.ag/swap/v1";
+const JUPITER_QUOTE = "https://api.jup.ag/swap/v1/quote";
+const JUPITER_SWAP = "https://api.jup.ag/swap/v1/swap";
 
 type QuoteResponse = {
   inputMint: string;
@@ -217,6 +217,7 @@ export function SwapPage() {
         outputMint,
         amount: String(amountLamports),
         slippageBps: "50",
+        restrictIntermediateTokens: "true",
       });
       const res = await fetch(`${JUPITER_QUOTE}?${params}`);
       if (!res.ok) {
@@ -290,6 +291,14 @@ export function SwapPage() {
           quoteResponse: quote,
           userPublicKey,
           wrapAndUnwrapSol: true,
+          dynamicComputeUnitLimit: true,
+          dynamicSlippage: true,
+          prioritizationFeeLamports: {
+            priorityLevelWithMaxLamports: {
+              maxLamports: 1000000,
+              priorityLevel: "veryHigh",
+            },
+          },
         }),
       });
 
@@ -298,7 +307,11 @@ export function SwapPage() {
         throw new Error((body as { error?: string }).error ?? `Swap request failed: ${swapRes.status}`);
       }
 
-      const { swapTransaction } = (await swapRes.json()) as { swapTransaction: string };
+      const swapData = (await swapRes.json()) as {
+        swapTransaction: string;
+        lastValidBlockHeight?: number;
+      };
+      const { swapTransaction, lastValidBlockHeight } = swapData;
 
       // Deserialize and sign
       const txBuf = Uint8Array.from(atob(swapTransaction), (c) => c.charCodeAt(0));
@@ -307,12 +320,23 @@ export function SwapPage() {
       if (!provider.signTransaction) throw new Error("Wallet does not support signTransaction");
       const signed = await provider.signTransaction(tx);
 
-      // Send
+      // Send and confirm
       const connection = new Connection(RPC_URL, "confirmed");
       const sig = await connection.sendRawTransaction(signed.serialize(), {
         skipPreflight: true,
         maxRetries: 2,
       });
+
+      // Wait for confirmation with timeout
+      const latestBlockHash = await connection.getLatestBlockhash("confirmed");
+      await connection.confirmTransaction(
+        {
+          signature: sig,
+          blockhash: latestBlockHash.blockhash,
+          lastValidBlockHeight: lastValidBlockHeight ?? latestBlockHash.lastValidBlockHeight,
+        },
+        "confirmed",
+      );
 
       setSwapSuccess(sig);
       setInputAmount("");

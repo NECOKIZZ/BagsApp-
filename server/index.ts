@@ -2818,11 +2818,94 @@ app.post("/api/admin/jupiter/refresh-metadata", async (_req, res) => {
   res.json({ ok: true });
 });
 
+// ── General token enrichment (DexScreener for ALL tokens) ───────
+/**
+ * Enriches ALL narrative_tokens with DexScreener data — not just Bags tokens.
+ * This ensures new/Jupiter-only tokens get current_mcap, current_price,
+ * total_volume, launched_at, returns, and score populated.
+ */
+async function refreshTokenMetricsOnce(): Promise<void> {
+  const limit = Number(process.env.TOKEN_METRICS_REFRESH_LIMIT ?? 100);
+  const { data: rows, error } = await supabase
+    .from("narrative_tokens")
+    .select("id, token_mint, score, current_mcap, current_price, total_volume, launched_at, returns, is_on_bags")
+    .order("updated_at", { ascending: true }) // oldest first
+    .limit(limit);
+
+  if (error) {
+    console.error("[token-metrics] supabase select error:", error);
+    return;
+  }
+
+  let updated = 0;
+  for (const row of rows ?? []) {
+    const mint = String(row.token_mint ?? "").trim();
+    if (!mint) continue;
+
+    try {
+      const dex = await fetchDexScreenerData(mint);
+      if (!dex.mcap && !dex.volume24h && !dex.liquidity) {
+        // DexScreener has no data for this token — skip to avoid overwriting with zeros
+        continue;
+      }
+
+      const patch: Record<string, unknown> = {};
+      if (dex.mcap != null) patch.current_mcap = dex.mcap;
+      if (dex.priceUsd != null) patch.current_price = dex.priceUsd;
+      if (dex.volume24h != null) patch.total_volume = dex.volume24h;
+      if (dex.pairCreatedAt && !row.launched_at) patch.launched_at = new Date(dex.pairCreatedAt).toISOString();
+      if (dex.priceChange24h != null) patch.returns = `${dex.priceChange24h >= 0 ? "+" : ""}${dex.priceChange24h.toFixed(2)}%`;
+
+      const newScore = calculateScratchScore({
+        mcap: dex.mcap ?? 0,
+        volume24h: dex.volume24h ?? 0,
+        liquidity: dex.liquidity ?? 0,
+        holders: 0,
+        hasSocials: dex.hasSocials,
+        priceChange24h: dex.priceChange24h ?? undefined,
+        pairCreatedAt: dex.pairCreatedAt,
+        txns24h: dex.txns24h,
+      });
+      patch.score = newScore;
+      patch.updated_at = new Date().toISOString();
+
+      const { error: upErr } = await supabase.from("narrative_tokens").update(patch).eq("id", row.id);
+      if (upErr) {
+        console.warn(`[token-metrics] update fail id=${row.id}:`, upErr.message);
+      } else {
+        updated++;
+      }
+    } catch (e) {
+      console.warn(`[token-metrics] dex fail mint=${mint}:`, e instanceof Error ? e.message : String(e));
+    }
+  }
+  console.log(`[token-metrics] enriched=${updated}/${rows?.length ?? 0}`);
+}
+
+function startTokenMetricsRefresher(): void {
+  const intervalMs = Number(process.env.TOKEN_METRICS_INTERVAL_MS ?? 300_000); // 5 min
+  if (intervalMs <= 0) {
+    console.log("[token-metrics] disabled (TOKEN_METRICS_INTERVAL_MS<=0)");
+    return;
+  }
+  console.log(`[token-metrics] enabled, interval=${Math.round(intervalMs / 1000)}s`);
+  setTimeout(() => {
+    void refreshTokenMetricsOnce();
+    setInterval(() => void refreshTokenMetricsOnce(), intervalMs);
+  }, 15_000);
+}
+
+app.post("/api/admin/token-metrics/refresh", async (_req, res) => {
+  await refreshTokenMetricsOnce();
+  res.json({ ok: true });
+});
+
 app.listen(PORT, () => {
   console.log(`[feed-api] listening on port ${PORT}`);
   startMetricsRefresher();
   startCleanupJob();
   startBagsRefresher();
   startJupiterMetadataRefresher();
+  startTokenMetricsRefresher();
   startFeedCacheRefresher();
 });
