@@ -629,6 +629,18 @@ export async function runNarrativePipeline({
   creator_handle?: string;
 }) {
   try {
+    // Deduplication: skip if this tweet was already processed.
+    // Admin replay endpoints delete existing tokens before re-running.
+    const { data: existingTokens } = await supabase
+      .from("narrative_tokens")
+      .select("id")
+      .eq("tweet_id", tweet_id)
+      .limit(1);
+    if ((existingTokens ?? []).length > 0) {
+      console.log(`[NarrativePipeline] skipping ${tweet_id}: already processed`);
+      return;
+    }
+
     const result = await extractNarrativeConcepts(content, creator_handle);
     if (!result) return; // Silent exit if no provider available
 
