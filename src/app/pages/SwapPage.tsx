@@ -418,13 +418,13 @@ export function SwapPage() {
                 <div className="flex items-center justify-between mb-3">
                   <span className="text-[11px] font-bold uppercase tracking-wider text-[#5a6078]">You pay</span>
                 </div>
-                <div className="flex items-center gap-3">
+                <div className="flex items-center gap-3 min-w-0">
                   <input
                     type="number"
                     value={inputAmount}
                     onChange={(e) => setInputAmount(e.target.value)}
                     placeholder="0.00"
-                    className="flex-1 bg-transparent text-3xl font-bold text-white placeholder:text-[#3a4058] outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                    className="flex-1 min-w-0 w-full bg-transparent text-3xl font-bold text-white placeholder:text-[#3a4058] outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
                     min="0"
                     step="any"
                   />
@@ -575,8 +575,22 @@ export function SwapPage() {
             </div>
           </div>
 
+          {/* Fallback: open on Jupiter directly with pre-filled tokens */}
+          {inputMint && outputMint && (
+            <a
+              href={`https://jup.ag/swap/${inputMint}-${outputMint}${
+                inputAmount && Number(inputAmount) > 0 ? `?amount=${inputAmount}` : ""
+              }`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="mt-4 flex items-center justify-center gap-2 w-full py-3 rounded-xl border border-[#1a1f2e] bg-[#0B0F17] text-sm font-bold uppercase tracking-wider text-[#8b92a8] hover:text-white hover:border-[#242b3d] transition-all"
+            >
+              Swap on Jupiter ↗
+            </a>
+          )}
+
           {/* Powered by Jupiter */}
-          <div className="mt-4 text-center text-[10px] text-[#3a4058]">
+          <div className="mt-3 text-center text-[10px] text-[#3a4058]">
             Powered by <a href="https://jup.ag" target="_blank" rel="noopener noreferrer" className="text-[#5a6078] hover:text-white transition-colors">Jupiter Aggregator</a>
           </div>
         </div>
