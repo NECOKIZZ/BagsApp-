@@ -11,7 +11,7 @@ import {
 } from "lucide-react";
 import { fetchJupiterTokenMap, type TokenMeta, SOL_MINT } from "../../lib/jupiter";
 import { getPhantom } from "../../lib/phantom";
-import { Connection, VersionedTransaction } from "@solana/web3.js";
+import { Connection, PublicKey, VersionedTransaction } from "@solana/web3.js";
 
 const RPC_URL =
   ((import.meta as any).env?.VITE_SOLANA_RPC as string | undefined)?.trim() ||
@@ -290,7 +290,7 @@ export function SwapPage() {
       // route can fail mid-transaction with "insufficient lamports".
       if (inputMint === SOL_MINT) {
         const connectionCheck = new Connection(RPC_URL, "confirmed");
-        const balLamports = await connectionCheck.getBalance(provider.publicKey!);
+        const balLamports = await connectionCheck.getBalance(new PublicKey(userPublicKey));
         const inputLamports = Math.round(Number(inputAmount) * 1e9);
         // Buffer: 0.005 SOL (covers max 0.001 priority fee + ~0.002 ATA rent + slippage)
         const BUFFER_LAMPORTS = 5_000_000;
