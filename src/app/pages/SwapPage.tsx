@@ -15,7 +15,7 @@ import { Connection, VersionedTransaction } from "@solana/web3.js";
 
 const RPC_URL =
   ((import.meta as any).env?.VITE_SOLANA_RPC as string | undefined)?.trim() ||
-  "https://solana-rpc.publicnode.com";
+  "https://mainnet.helius-rpc.com/?api-key=50a515f8-c104-446d-8a38-d2f9066ed07e";
 const JUPITER_QUOTE = "https://api.jup.ag/swap/v1/quote";
 const JUPITER_SWAP = "https://api.jup.ag/swap/v1/swap";
 
