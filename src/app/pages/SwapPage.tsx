@@ -285,6 +285,24 @@ export function SwapPage() {
       const userPublicKey = provider.publicKey?.toString();
       if (!userPublicKey) throw new Error("Could not get wallet address");
 
+      // Pre-flight balance check when paying with SOL — reserve a safety buffer
+      // for network fee, priority fee, and ATA rent. Without this, Jupiter's
+      // route can fail mid-transaction with "insufficient lamports".
+      if (inputMint === SOL_MINT) {
+        const connectionCheck = new Connection(RPC_URL, "confirmed");
+        const balLamports = await connectionCheck.getBalance(provider.publicKey!);
+        const inputLamports = Math.round(Number(inputAmount) * 1e9);
+        // Buffer: 0.005 SOL (covers max 0.001 priority fee + ~0.002 ATA rent + slippage)
+        const BUFFER_LAMPORTS = 5_000_000;
+        if (inputLamports + BUFFER_LAMPORTS > balLamports) {
+          const maxSwappable = Math.max(0, (balLamports - BUFFER_LAMPORTS) / 1e9);
+          throw new Error(
+            `Not enough SOL. You need at least ${(BUFFER_LAMPORTS / 1e9).toFixed(3)} SOL reserved for fees + rent. ` +
+            `Max swappable: ${maxSwappable.toFixed(4)} SOL.`,
+          );
+        }
+      }
+
       // Get swap transaction from Jupiter
       const swapRes = await fetch(JUPITER_SWAP, {
         method: "POST",
@@ -325,7 +343,7 @@ export function SwapPage() {
       // Send and confirm
       const connection = new Connection(RPC_URL, "confirmed");
       const sig = await connection.sendRawTransaction(signed.serialize(), {
-        skipPreflight: true,
+        skipPreflight: false,
         maxRetries: 2,
       });
 
