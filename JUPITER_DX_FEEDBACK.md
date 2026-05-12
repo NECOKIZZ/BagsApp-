@@ -28,7 +28,7 @@ Things that confused me:
 
 Specific things I went looking for and could not find or had to dig hard for:
 
-**SOL reservation when swapping SOL into a token.** The docs do not warn you that swapping near your full SOL balance will fail mid route with , because the route needs to wrap SOL, pay rent for new ATAs, and cover the priority fee. My swap landed onchain because I had `skipPreflight: true`, which is also what every  repo I saw set, failed inside the Jupiter route program, and the user paid the network fee for nothing. There needs to be a giant box somewhere that says: when paying with SOL, reserve at least 0.005 SOL for fees and rent, or the route will fail. I had to find this out by reading a failed transaction's program logs on Solscan.
+**SOL reservation when swapping SOL into a token.** The docs do not warn you that swapping near your full SOL balance will fail mid route with , because the route needs to wrap SOL, pay rent for new ATAs, and cover the priority fee. My swap landed onchain because I had `skipPreflight: true`, which is also what every  repo I saw set, failed inside the Jupiter route program, and the user paid the network fee for nothing. There needs to be a giant box somewhere that says: when paying with SOL, reserve at least 0.005 SOL for fees and rent, or the route will fail. I had to find this out by reading the failed transaction's program logs on Solscan.
 
 **`prioritizationFeeLamports` configuration.** The schema is nested and confusing:
 
@@ -57,7 +57,7 @@ const v3Resp = await fetch(`${host}/price/v3?ids=${ids}`, { headers });
 
 That is silly. Pick one shape, deprecate the other on a clear timeline.
 
-**`tokens.jup.ag/token/{mint}`.** Returns 200 with empty body for unknown tokens. Should be 404. Cost me a debugging session because my code thought "200 means valid metadata".
+**`tokens.jup.ag/token/{mint}`.** Returns 200 with empty body for unknown tokens. Should be 404. Cost me a 30 minute debugging session because my Claude Opus thought "200 means valid metadata".
 
 **Rate limits.** Not in headers. Not in the docs that I found. Are there per IP limits on the lite host. Per key on the pro host. Per route. I do not know.
 
